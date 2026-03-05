@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InfluencerFind — Instagram Profile Discovery</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ─── Navbar ──────────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <a href="/" class="nav-brand">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#a855f7"/><stop offset="100%" style="stop-color:#ec4899"/></linearGradient></defs>
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <span>InfluencerFind</span>
+      </a>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <a href="/negotiate" style="color:#a855f7;text-decoration:none;font-size:14px;font-weight:600;padding:8px 16px;border-radius:8px;background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.2);transition:all 0.2s;">AI Negotiate</a>
+        <div class="nav-status">
+          <span class="status-dot"></span>
+          <span class="status-text">Ready</span>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ─── Hero ────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="hero-badge">Instagram Influencer Discovery</div>
+      <h1>Discover the perfect <span class="gradient-text">creators</span> for your brand</h1>
+      <p class="hero-sub">Enter seed accounts from your niche. Our AI-powered scraper analyzes their network to find similar influencers with verified engagement metrics.</p>
+    </section>
+
+    <!-- ─── Search Form Card ────────────────────────────── -->
+    <section class="card search-card">
+      <div class="card-header">
+        <div class="card-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        </div>
+        <div>
+          <h2>Search Influencers</h2>
+          <p class="card-subtitle">Configure your search parameters below</p>
+        </div>
+      </div>
+
+      <form id="searchForm" class="search-form">
+        <div class="form-group full-width">
+          <label for="seedAccounts">Seed Accounts <span class="required">*</span></label>
+          <input type="text" id="seedAccounts" placeholder="e.g. nike, adidas, underarmour" required />
+          <span class="form-hint">3-5 Instagram handles (without @), comma-separated. We'll discover similar profiles.</span>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="maxProfiles">Profiles to Find</label>
+            <input type="number" id="maxProfiles" value="100" min="10" max="1000" />
+          </div>
+          <div class="form-group">
+            <label for="minFollowers">Min Followers</label>
+            <input type="number" id="minFollowers" placeholder="e.g. 1000" />
+          </div>
+          <div class="form-group">
+            <label for="maxFollowers">Max Followers</label>
+            <input type="number" id="maxFollowers" placeholder="e.g. 500000" />
+          </div>
+        </div>
+
+        <div class="form-group full-width">
+          <label for="nicheKeywords">Niche / Keywords</label>
+          <input type="text" id="nicheKeywords" placeholder="e.g. fitness, fashion, tech reviews" />
+          <span class="form-hint">Describe the type of influencer you're looking for</span>
+        </div>
+
+        <div class="form-group full-width">
+          <label for="location">Location</label>
+          <select id="location">
+            <option value="">Any Location</option>
+            <option value="US">United States</option>
+            <option value="UK">United Kingdom</option>
+            <option value="IN">India</option>
+            <option value="CA">Canada</option>
+            <option value="AU">Australia</option>
+            <option value="DE">Germany</option>
+            <option value="FR">France</option>
+            <option value="BR">Brazil</option>
+            <option value="AE">UAE</option>
+            <option value="SG">Singapore</option>
+          </select>
+        </div>
+
+        <button type="submit" id="searchBtn" class="btn btn-primary btn-lg">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          Find Influencers
+        </button>
+      </form>
+    </section>
+
+    <!-- ─── Status Bar ──────────────────────────────────── -->
+    <section id="statusBar" class="card status-card" style="display:none;">
+      <div class="status-content">
+        <div class="spinner"></div>
+        <div>
+          <h3 id="statusTitle">Starting scraper...</h3>
+          <p id="statusSub">This may take 5-15 minutes depending on the number of profiles.</p>
+        </div>
+      </div>
+      <div class="progress-bar">
+        <div id="progressFill" class="progress-fill" style="width:0%"></div>
+      </div>
+    </section>
+
+    <!-- ─── DM Outreach Panel ───────────────────────────── -->
+    <section id="dmPanel" class="card dm-card" style="display:none;">
+      <div class="card-header clickable" id="dmPanelToggle">
+        <div class="card-icon purple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+        </div>
+        <div>
+          <h2>DM Outreach Template</h2>
+          <p class="card-subtitle">Craft your message — it's copied to clipboard before each DM opens</p>
+        </div>
+        <svg class="chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+
+      <div class="dm-body">
+        <div class="dm-info">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+          <span>When you click "Send DM", your message is copied to clipboard. Just paste (Ctrl+V / Cmd+V) in the DM window and send.</span>
+        </div>
+
+        <div class="dm-grid">
+          <div class="dm-template-col">
+            <label for="dmTemplate">Message Template</label>
+            <textarea id="dmTemplate" rows="7">Hey {name}! 
+
+I came across your profile and love the content you create. I think there's a great opportunity for us to collaborate.
+
+Would you be open to a quick chat about a potential partnership?
+
+Looking forward to hearing from you!</textarea>
+            <div class="dm-tags">
+              <button type="button" class="dm-tag" data-placeholder="{name}">+ {name}</button>
+              <button type="button" class="dm-tag" data-placeholder="{username}">+ {username}</button>
+              <button type="button" class="dm-tag" data-placeholder="{followers}">+ {followers}</button>
+              <button type="button" class="dm-tag" data-placeholder="{category}">+ {category}</button>
+            </div>
+          </div>
+          <div class="dm-preview-col">
+            <label>Live Preview</label>
+            <div id="dmPreview" class="dm-preview-box">Your message preview will appear here...</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Results Card ────────────────────────────────── -->
+    <section id="resultsCard" class="card results-card" style="display:none;">
+      <div class="results-header">
+        <div class="results-title">
+          <h2><span id="resultCount">0</span> Profiles Found</h2>
+          <p class="card-subtitle">Export your results or send DMs directly</p>
+          <span id="dmCounter" class="dm-counter-badge"></span>
+        </div>
+        <div class="results-actions">
+          <button id="btnDmAll" class="btn btn-outline btn-dm-all" title="DM all uncontacted">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+            DM All
+          </button>
+          <button id="btnCSV" class="btn btn-outline" title="Export CSV">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            CSV
+          </button>
+          <button id="btnExcel" class="btn btn-outline" title="Export Excel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Excel
+          </button>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Profile</th>
+              <th>Full Name</th>
+              <th>Followers</th>
+              <th>Engagement</th>
+              <th>Quality</th>
+              <th>Email</th>
+              <th>Category</th>
+              <th>Bio</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ─── Error Card ──────────────────────────────────── -->
+    <div id="errorCard" class="error-card" style="display:none;">
+      <div class="error-inner">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="errorMessage">An error occurred.</span>
+        <button id="dismissError" class="error-dismiss">&times;</button>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ─── Footer ──────────────────────────────────────── -->
+  <footer class="footer">
+    <p>Powered by Apify &middot; Built for influencer discovery</p>
+  </footer>
+
+  <!-- ─── Toast ───────────────────────────────────────── -->
+  <div id="dmToast" class="toast">
+    <span id="dmToastMessage">Message copied!</span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

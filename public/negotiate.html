@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InfluencerFind — AI Negotiation Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="negotiate.css" />
+</head>
+<body>
+
+  <!-- ─── Navbar ──────────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <a href="/" class="nav-brand">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#a855f7"/><stop offset="100%" style="stop-color:#ec4899"/></linearGradient></defs>
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <span>InfluencerFind</span>
+      </a>
+      <div class="nav-links">
+        <a href="/" class="nav-link">Discovery</a>
+        <a href="/negotiate" class="nav-link active">Negotiate</a>
+        <button id="btnSettings" class="nav-link settings-btn">Settings</button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ─── Header ──────────────────────────────────────── -->
+    <section class="page-header">
+      <div>
+        <h1>AI Negotiation <span class="gradient-text">Agent</span></h1>
+        <p class="page-sub">Your AI handles the deal. You paste the reply, it crafts the perfect response.</p>
+      </div>
+      <button id="btnNewCampaign" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Campaign
+      </button>
+    </section>
+
+    <!-- ─── Campaign List ───────────────────────────────── -->
+    <section id="campaignList" class="campaign-list"></section>
+
+    <!-- ─── Empty State ─────────────────────────────────── -->
+    <section id="emptyState" class="empty-state" style="display:none;">
+      <div class="empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+      </div>
+      <h3>No campaigns yet</h3>
+      <p>Create a campaign to start negotiating with influencers.</p>
+    </section>
+
+    <!-- ─── Negotiation Panel (shown when a campaign is selected) ── -->
+    <section id="negotiationPanel" class="negotiation-panel" style="display:none;">
+      <div class="panel-header">
+        <button id="btnBack" class="btn-back">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          Back
+        </button>
+        <div id="campaignInfo" class="campaign-info"></div>
+        <button id="btnAddInfluencers" class="btn btn-outline btn-sm">+ Add Influencers</button>
+      </div>
+
+      <!-- Autopilot Control -->
+      <div class="autopilot-bar" id="autopilotBar">
+        <div class="autopilot-left">
+          <div class="autopilot-indicator" id="autopilotIndicator">
+            <span class="autopilot-dot"></span>
+            <span id="autopilotLabel">Autopilot Off</span>
+          </div>
+          <span id="autopilotStatus" class="autopilot-status">Click to start — AI will auto-read replies and respond</span>
+        </div>
+        <div class="autopilot-right">
+          <button id="btnAutopilotOnce" class="btn btn-outline btn-sm" title="Check for replies once">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Check Now
+          </button>
+          <button id="btnAutopilotToggle" class="btn btn-primary btn-sm">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start Autopilot
+          </button>
+        </div>
+      </div>
+
+      <!-- Autopilot Log -->
+      <div id="autopilotLog" class="autopilot-log" style="display:none;"></div>
+
+      <!-- Stats Row -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <span class="stat-value" id="statTotal">0</span>
+          <span class="stat-label">Total</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-negotiating" id="statNegotiating">0</span>
+          <span class="stat-label">Negotiating</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-closed" id="statClosed">0</span>
+          <span class="stat-label">Closed</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-rejected" id="statRejected">0</span>
+          <span class="stat-label">Rejected</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-spent" id="statSpent">0</span>
+          <span class="stat-label">Spent</span>
+        </div>
+      </div>
+
+      <!-- Negotiation List -->
+      <div class="neg-list" id="negList"></div>
+    </section>
+
+    <!-- ─── Chat Panel (shown when a negotiation is selected) ──── -->
+    <section id="chatPanel" class="chat-panel" style="display:none;">
+      <div class="chat-header">
+        <button id="btnBackToNeg" class="btn-back">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          Back
+        </button>
+        <div class="chat-creator-info">
+          <div class="chat-avatar" id="chatAvatar">AB</div>
+          <div>
+            <h3 id="chatCreatorName">@username</h3>
+            <span id="chatCreatorMeta" class="chat-meta">10K followers · Fitness</span>
+          </div>
+        </div>
+        <div class="chat-actions">
+          <select id="chatStatus" class="status-select">
+            <option value="contacted">Contacted</option>
+            <option value="replied">Replied</option>
+            <option value="negotiating">Negotiating</option>
+            <option value="closed">Closed</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chatMessages"></div>
+
+      <div class="chat-input-area">
+        <div class="chat-input-row">
+          <textarea id="creatorReply" class="chat-textarea" placeholder="Paste the creator's reply here..." rows="2"></textarea>
+          <button id="btnSubmitReply" class="btn btn-outline btn-sm" title="Submit creator's reply">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12"/><path d="M12 2a10 10 0 0 1 0 20 10 10 0 0 1 0-20"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+            Submit Reply
+          </button>
+        </div>
+
+        <div id="aiResponseArea" class="ai-response-area" style="display:none;">
+          <div class="ai-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v4h8V6a4 4 0 0 0-4-4z"/><rect x="3" y="10" width="18" height="12" rx="2"/><circle cx="12" cy="16" r="1"/></svg>
+            AI-Generated Response
+          </div>
+          <div id="aiResponseText" class="ai-response-text"></div>
+          <div class="ai-actions">
+            <button id="btnRegenerateAI" class="btn btn-outline btn-sm">Regenerate</button>
+            <button id="btnEditAI" class="btn btn-outline btn-sm">Edit</button>
+            <button id="btnSendAI" class="btn btn-primary btn-sm">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+              Send via DM
+            </button>
+            <button id="btnCopyAI" class="btn btn-outline btn-sm">Copy</button>
+          </div>
+        </div>
+
+        <div class="chat-bottom-actions">
+          <button id="btnGenerateAI" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v4h8V6a4 4 0 0 0-4-4z"/><rect x="3" y="10" width="18" height="12" rx="2"/><circle cx="12" cy="16" r="1"/></svg>
+            Generate AI Response
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ─── New Campaign Modal ──────────────────────────── -->
+  <div id="modalOverlay" class="modal-overlay" style="display:none;">
+    <div class="modal" id="campaignModal">
+      <div class="modal-header">
+        <h2>Create Campaign</h2>
+        <button id="modalClose" class="modal-close">&times;</button>
+      </div>
+      <form id="campaignForm" class="modal-body">
+        <div class="form-group">
+          <label for="fBrandName">Brand Name *</label>
+          <input type="text" id="fBrandName" placeholder="e.g. FitLife India" required />
+        </div>
+        <div class="form-group">
+          <label for="fProductName">Product / Service</label>
+          <input type="text" id="fProductName" placeholder="e.g. Protein Powder" />
+        </div>
+        <div class="form-group">
+          <label for="fCollabType">Collaboration Type</label>
+          <select id="fCollabType">
+            <option value="Paid Reel">Paid Reel</option>
+            <option value="Paid Story">Paid Story</option>
+            <option value="Paid Post">Paid Post</option>
+            <option value="Barter">Barter (Product Exchange)</option>
+            <option value="Affiliate">Affiliate</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fCurrency">Currency</label>
+            <select id="fCurrency">
+              <option value="INR">INR (₹)</option>
+              <option value="USD">USD ($)</option>
+              <option value="GBP">GBP (£)</option>
+              <option value="EUR">EUR (€)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="fBudgetMin">Min Budget/Creator *</label>
+            <input type="number" id="fBudgetMin" placeholder="e.g. 5000" required />
+          </div>
+          <div class="form-group">
+            <label for="fBudgetMax">Max Budget/Creator *</label>
+            <input type="number" id="fBudgetMax" placeholder="e.g. 15000" required />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="fTotalBudget">Total Campaign Budget</label>
+          <input type="number" id="fTotalBudget" placeholder="e.g. 100000" />
+        </div>
+        <div class="form-group">
+          <label for="fBrief">Campaign Brief</label>
+          <textarea id="fBrief" rows="4" placeholder="Describe what you want the creator to do, product details, any requirements..."></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg">Create Campaign</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ─── Add Influencers Modal ───────────────────────── -->
+  <div id="addInfluencerOverlay" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Add Influencers</h2>
+        <button id="addInfluencerClose" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">Paste influencer usernames, one per line. These should be creators you've already sent the initial DM to.</p>
+        <div class="form-group">
+          <label for="fInfluencerList">Usernames</label>
+          <textarea id="fInfluencerList" rows="6" placeholder="nike&#10;adidas&#10;underarmour"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="fFirstMessage">First Message You Sent</label>
+          <textarea id="fFirstMessage" rows="3" placeholder="Hey! I came across your profile and love your content..."></textarea>
+        </div>
+        <button id="btnDoAddInfluencers" class="btn btn-primary btn-lg">Add to Campaign</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Settings Modal ─────────────────────────────── -->
+  <div id="settingsOverlay" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="settingsClose" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">Paste your Instagram cookies (JSON array) here. These are needed to send DMs via the Apify automation actor.</p>
+        <div class="form-group">
+          <label for="fCookies">Instagram Cookies (JSON)</label>
+          <textarea id="fCookies" rows="8" placeholder='[{"name":"sessionid","value":"...","domain":".instagram.com",...}]'></textarea>
+        </div>
+        <div id="cookieStatus" class="cookie-status"></div>
+        <button id="btnSaveCookies" class="btn btn-primary btn-lg">Save Cookies</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Toast ───────────────────────────────────────── -->
+  <div id="toast" class="toast">
+    <span id="toastMessage">Done!</span>
+  </div>
+
+  <script src="negotiate.js"></script>
+</body>
+</html>
