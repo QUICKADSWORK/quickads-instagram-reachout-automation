@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: quickads-instagram-reachout
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: APIFY_TOKEN
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: NODE_VERSION
+        value: 18.20.8
