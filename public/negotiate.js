@@ -35,8 +35,13 @@
   // ═══════════════════════════════════════════════════════
 
   async function loadCampaigns() {
-    const res = await fetch('/api/campaigns');
-    campaigns = await res.json();
+    try {
+      const res = await fetch('/api/campaigns');
+      if (!res.ok) throw new Error('Failed to load campaigns');
+      campaigns = await res.json();
+    } catch {
+      campaigns = [];
+    }
     renderCampaigns();
   }
 
@@ -151,8 +156,13 @@
   }
 
   async function loadNegotiations() {
-    const res = await fetch(`/api/negotiations?campaignId=${currentCampaign.id}`);
-    negotiations = await res.json();
+    try {
+      const res = await fetch(`/api/negotiations?campaignId=${currentCampaign.id}`);
+      if (!res.ok) throw new Error('Failed');
+      negotiations = await res.json();
+    } catch {
+      negotiations = [];
+    }
     renderNegotiations();
   }
 
@@ -460,8 +470,11 @@
   // ═══════════════════════════════════════════════════════
 
   async function checkCookies() {
-    const res = await fetch('/api/settings/cookies');
-    const data = await res.json();
+    let data = { hasCookies: false, count: 0 };
+    try {
+      const res = await fetch('/api/settings/cookies');
+      if (res.ok) data = await res.json();
+    } catch {}
     const el = $('#cookieStatus');
     if (data.hasCookies) {
       el.className = 'cookie-status has-cookies';

@@ -857,6 +857,14 @@ app.get('/negotiate', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'negotiate.html'));
 });
 
+// Catch-all: API routes return JSON 404, other routes serve index.html
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Endpoint not found.' });
+  }
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 app.listen(PORT, () => {
   console.log(`\n  InfluencerFind running at http://localhost:${PORT}\n`);
 });
