@@ -222,43 +222,269 @@
     loadCampaigns();
   });
 
-  // Add Influencers Modal
+  // ═══════════════════════════════════════════════════════
+  //  Add Influencers — unified Track + Send flow
+  // ═══════════════════════════════════════════════════════
+
+  const ADD_VARS = [
+    'first_name', 'username', 'full_name', 'followers', 'category',
+    'brand', 'product', 'collab_type', 'budget_min', 'budget_max'
+  ];
+  let addMode = 'send';
+  let addJobId = null;
+  let addPollTimer = null;
+
+  function parseCreatorList(raw) {
+    const text = (raw || '').trim();
+    if (!text) return [];
+
+    if (text.startsWith('[')) {
+      try {
+        const arr = JSON.parse(text);
+        if (Array.isArray(arr)) {
+          return arr.map(c => typeof c === 'string'
+            ? { username: c.replace(/^@/, '').trim() }
+            : {
+                username: String(c.username || c.handle || '').replace(/^@/, '').trim(),
+                fullName: c.fullName || c.name || '',
+                followers: c.followers || 0,
+                category: c.category || '',
+                email: c.email || '',
+              }
+          ).filter(c => c.username);
+        }
+      } catch {}
+    }
+
+    return text.split('\n').map(line => {
+      const [unameRaw, ...rest] = line.split(',');
+      const uname = (unameRaw || '').replace(/^@/, '').trim();
+      if (!uname) return null;
+      return { username: uname, fullName: rest.join(',').trim() };
+    }).filter(Boolean);
+  }
+
+  function renderAddVarChips() {
+    const host = $('#addVarChips');
+    if (!host) return;
+    host.innerHTML = ADD_VARS.map(v =>
+      `<button type="button" class="btn btn-outline btn-sm" data-var="${v}" style="padding:4px 10px;font-size:12px;">{{${v}}}</button>`
+    ).join('');
+    host.querySelectorAll('button[data-var]').forEach(b => {
+      b.addEventListener('click', () => {
+        const ta = $('#fFirstMessage');
+        const token = `{{${b.dataset.var}}}`;
+        const start = ta.selectionStart || ta.value.length;
+        const end = ta.selectionEnd || ta.value.length;
+        ta.value = ta.value.slice(0, start) + token + ta.value.slice(end);
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = start + token.length;
+      });
+    });
+  }
+
+  function applyAddMode(mode) {
+    addMode = mode;
+    const sendBtn = $('#modeSend');
+    const trackBtn = $('#modeTrack');
+    sendBtn.classList.toggle('mode-btn-active', mode === 'send');
+    trackBtn.classList.toggle('mode-btn-active', mode === 'track');
+    sendBtn.style.color = mode === 'send' ? 'var(--text)' : 'var(--text-muted)';
+    trackBtn.style.color = mode === 'track' ? 'var(--text)' : 'var(--text-muted)';
+
+    $('#sendOptions').style.display = mode === 'send' ? 'block' : 'none';
+    $('#addVarChips').style.display = mode === 'send' ? 'flex' : 'none';
+    $('#btnAddPreview').style.display = mode === 'send' ? 'inline-flex' : 'none';
+
+    $('#messageLabel').textContent = mode === 'send' ? 'Message Template' : 'First Message You Sent';
+    $('#addPrimaryLabel').textContent = mode === 'send' ? '🚀 Send DMs Now' : '📋 Add to Campaign';
+    $('#modeHint').textContent = mode === 'send'
+      ? 'Send a personalized initial DM to this list right from here. No copy-pasting on Instagram.'
+      : 'Just track creators you already messaged on Instagram manually. Replies from them will show up here.';
+
+    $('#fFirstMessage').placeholder = mode === 'send'
+      ? "Hey {{first_name}}! Loved your content 🙌 I'm from {{brand}} — we're lining up a {{collab_type}} around our {{product}}. Budget around {{budget_min}}. Interested?"
+      : 'Hey! I came across your profile and love your content...';
+  }
+
   $('#btnAddInfluencers').addEventListener('click', () => {
     $('#addInfluencerOverlay').style.display = 'flex';
+    $('#addStep1').style.display = 'block';
+    $('#addStep2').style.display = 'none';
+    $('#addPreview').style.display = 'none';
+    addJobId = null;
+    if (addPollTimer) { clearInterval(addPollTimer); addPollTimer = null; }
+    renderAddVarChips();
+    applyAddMode('send');
   });
 
   $('#addInfluencerClose').addEventListener('click', () => {
     $('#addInfluencerOverlay').style.display = 'none';
+    if (addPollTimer) { clearInterval(addPollTimer); addPollTimer = null; }
+  });
+
+  $('#modeSend').addEventListener('click', () => applyAddMode('send'));
+  $('#modeTrack').addEventListener('click', () => applyAddMode('track'));
+
+  $('#btnAddPreview').addEventListener('click', async () => {
+    const template = $('#fFirstMessage').value;
+    const creators = parseCreatorList($('#fInfluencerList').value).slice(0, 3);
+    if (!template.trim()) { showToast('Write a message template first'); return; }
+    if (!creators.length) { showToast('Add at least one creator'); return; }
+
+    try {
+      const res = await fetch('/api/templates/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template, creators, campaignId: currentCampaign.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Preview failed'); return; }
+      $('#addPreviewBody').innerHTML = data.previews.map(p => `
+        <div style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:8px;">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">@${esc(p.username)}${p.fullName ? ' · ' + esc(p.fullName) : ''}</div>
+          <div style="white-space:pre-wrap;">${esc(p.rendered)}</div>
+        </div>
+      `).join('');
+      $('#addPreview').style.display = 'block';
+    } catch (err) {
+      showToast('Preview error: ' + err.message);
+    }
   });
 
   $('#btnDoAddInfluencers').addEventListener('click', async () => {
-    const raw = $('#fInfluencerList').value.trim();
-    if (!raw) { showToast('Enter at least one username'); return; }
+    const creators = parseCreatorList($('#fInfluencerList').value);
+    if (!creators.length) { showToast('Add at least one creator'); return; }
 
-    const usernames = raw.split('\n').map(u => u.trim().replace('@', '')).filter(Boolean);
-    const firstMessage = $('#fFirstMessage').value.trim() || 'Initial DM sent';
-
-    const influencers = usernames.map(username => ({
-      username,
-      firstMessage,
-    }));
-
-    const res = await fetch('/api/negotiations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId: currentCampaign.id, influencers }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      showToast(err.error || 'Failed');
+    if (addMode === 'track') {
+      const firstMessage = $('#fFirstMessage').value.trim() || 'Initial DM sent';
+      const payload = creators.map(c => ({
+        username: c.username,
+        fullName: c.fullName || '',
+        firstMessage,
+      }));
+      const res = await fetch('/api/negotiations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: currentCampaign.id, influencers: payload }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || 'Failed');
+        return;
+      }
+      const created = await res.json();
+      $('#addInfluencerOverlay').style.display = 'none';
+      $('#fInfluencerList').value = '';
+      $('#fFirstMessage').value = '';
+      showToast(`Added ${created.length} influencer(s)`);
+      loadNegotiations();
       return;
     }
 
-    const created = await res.json();
+    // Send mode — kick off bulk job
+    const template = $('#fFirstMessage').value.trim();
+    const delaySeconds = Number($('#fMassDelay').value) || 45;
+    const maxPerRun = Number($('#fMassCap').value) || 30;
+    const reDmExisting = $('#fMassRedm').checked;
+
+    if (!template) { showToast('Write a message template first'); return; }
+    if (delaySeconds < 15) {
+      if (!confirm('A delay under 15s can trip Instagram spam detection. Continue?')) return;
+    }
+
+    const btn = $('#btnDoAddInfluencers');
+    btn.disabled = true;
+    const label = $('#addPrimaryLabel').textContent;
+    $('#addPrimaryLabel').textContent = 'Starting…';
+    try {
+      const res = await fetch(`/api/campaigns/${currentCampaign.id}/bulk-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template, creators, delaySeconds, maxPerRun, reDmExisting }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Failed to start', 8000); return; }
+
+      addJobId = data.jobId;
+      $('#addStep1').style.display = 'none';
+      $('#addStep2').style.display = 'block';
+      $('#addTotal').textContent = data.total;
+      $('#addSent').textContent = '0';
+      $('#addFailed').textContent = '0';
+      $('#addSkipped').textContent = '0';
+      $('#addProgressBar').style.width = '0%';
+      $('#addLog').innerHTML = '';
+      startAddPolling();
+      showToast(`Outreach started for ${data.total} creator(s)`);
+    } catch (err) {
+      showToast('Error: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      $('#addPrimaryLabel').textContent = label;
+    }
+  });
+
+  function startAddPolling() {
+    if (addPollTimer) clearInterval(addPollTimer);
+    pollAddJob();
+    addPollTimer = setInterval(pollAddJob, 3000);
+  }
+
+  async function pollAddJob() {
+    if (!addJobId) return;
+    try {
+      const res = await fetch(`/api/bulk-jobs/${addJobId}`);
+      if (!res.ok) return;
+      const job = await res.json();
+
+      $('#addSent').textContent = job.sent || 0;
+      $('#addFailed').textContent = job.failed || 0;
+      $('#addSkipped').textContent = job.skipped || 0;
+      $('#addTotal').textContent = job.total || 0;
+
+      const processed = (job.sent || 0) + (job.failed || 0) + (job.skipped || 0);
+      const pct = job.total ? Math.round((processed / job.total) * 100) : 0;
+      $('#addProgressBar').style.width = pct + '%';
+
+      $('#addJobStatus').textContent = {
+        running: `Running… ${processed}/${job.total}`,
+        completed: `Completed · ${job.sent} sent, ${job.failed} failed, ${job.skipped} skipped`,
+        stopped: 'Stopped by user',
+        failed: 'Job failed',
+      }[job.status] || job.status;
+
+      const logEl = $('#addLog');
+      logEl.innerHTML = (job.log || []).slice(-100).map(e => {
+        const time = new Date(e.at).toLocaleTimeString();
+        return `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${e.type === 'error' ? 'error' : e.type === 'success' ? 'action' : 'info'}">${esc(e.msg)}</span></div>`;
+      }).join('');
+      logEl.scrollTop = logEl.scrollHeight;
+
+      if (job.status !== 'running') {
+        clearInterval(addPollTimer);
+        addPollTimer = null;
+        loadNegotiations();
+      }
+    } catch (err) {
+      console.error('Poll error:', err);
+    }
+  }
+
+  $('#btnAddStop').addEventListener('click', async () => {
+    if (!addJobId) return;
+    if (!confirm('Stop the bulk outreach? Messages already sent will remain.')) return;
+    try {
+      await fetch(`/api/bulk-jobs/${addJobId}/stop`, { method: 'POST' });
+      showToast('Stop requested');
+    } catch (err) {
+      showToast('Failed to stop: ' + err.message);
+    }
+  });
+
+  $('#btnAddDone').addEventListener('click', () => {
     $('#addInfluencerOverlay').style.display = 'none';
-    $('#fInfluencerList').value = '';
-    showToast(`Added ${created.length} influencer(s)`);
+    if (addPollTimer) { clearInterval(addPollTimer); addPollTimer = null; }
     loadNegotiations();
   });
 
@@ -481,220 +707,6 @@
       if (idx !== -1) negotiations[idx] = currentNeg;
       showToast(status === 'closed' ? `Deal closed at ${currencySymbol(currentCampaign.currency)}${currentNeg.agreedPrice}!` : `Status: ${status}`);
     }
-  });
-
-  // ═══════════════════════════════════════════════════════
-  //  Mass Outreach
-  // ═══════════════════════════════════════════════════════
-
-  const MASS_VARS = [
-    'first_name', 'username', 'full_name', 'followers', 'category',
-    'brand', 'product', 'collab_type', 'budget_min', 'budget_max'
-  ];
-
-  let massPollTimer = null;
-  let massJobId = null;
-
-  function parseMassList(raw) {
-    const text = (raw || '').trim();
-    if (!text) return [];
-
-    // Allow JSON array paste
-    if (text.startsWith('[')) {
-      try {
-        const arr = JSON.parse(text);
-        if (Array.isArray(arr)) {
-          return arr.map(c => typeof c === 'string'
-            ? { username: c.replace(/^@/, '').trim() }
-            : {
-                username: String(c.username || c.handle || '').replace(/^@/, '').trim(),
-                fullName: c.fullName || c.name || '',
-                followers: c.followers || 0,
-                category: c.category || '',
-                email: c.email || '',
-              }
-          ).filter(c => c.username);
-        }
-      } catch {}
-    }
-
-    return text.split('\n').map(line => {
-      const [unameRaw, ...rest] = line.split(',');
-      const uname = (unameRaw || '').replace(/^@/, '').trim();
-      if (!uname) return null;
-      return { username: uname, fullName: rest.join(',').trim() };
-    }).filter(Boolean);
-  }
-
-  function renderVarChips() {
-    const host = $('#massVarChips');
-    if (!host) return;
-    host.innerHTML = MASS_VARS.map(v =>
-      `<button type="button" class="btn btn-outline btn-sm" data-var="${v}" style="padding:4px 10px;font-size:12px;">{{${v}}}</button>`
-    ).join('');
-    host.querySelectorAll('button[data-var]').forEach(b => {
-      b.addEventListener('click', () => {
-        const ta = $('#fMassTemplate');
-        const token = `{{${b.dataset.var}}}`;
-        const start = ta.selectionStart || ta.value.length;
-        const end = ta.selectionEnd || ta.value.length;
-        ta.value = ta.value.slice(0, start) + token + ta.value.slice(end);
-        ta.focus();
-        ta.selectionStart = ta.selectionEnd = start + token.length;
-      });
-    });
-  }
-
-  $('#btnMassOutreach')?.addEventListener('click', () => {
-    $('#massOverlay').style.display = 'flex';
-    $('#massStep1').style.display = 'block';
-    $('#massStep2').style.display = 'none';
-    $('#massPreview').style.display = 'none';
-    massJobId = null;
-    if (massPollTimer) { clearInterval(massPollTimer); massPollTimer = null; }
-    renderVarChips();
-  });
-
-  $('#massClose')?.addEventListener('click', () => {
-    $('#massOverlay').style.display = 'none';
-    if (massPollTimer) { clearInterval(massPollTimer); massPollTimer = null; }
-  });
-
-  $('#btnMassPreview')?.addEventListener('click', async () => {
-    const template = $('#fMassTemplate').value;
-    const creators = parseMassList($('#fMassList').value).slice(0, 3);
-    if (!template.trim()) { showToast('Write a message template first'); return; }
-    if (!creators.length) { showToast('Add at least one creator'); return; }
-
-    try {
-      const res = await fetch('/api/templates/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template, creators, campaignId: currentCampaign.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Preview failed'); return; }
-      const body = $('#massPreviewBody');
-      body.innerHTML = data.previews.map(p => `
-        <div style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:8px;">
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">@${esc(p.username)}${p.fullName ? ' · ' + esc(p.fullName) : ''}</div>
-          <div style="white-space:pre-wrap;">${esc(p.rendered)}</div>
-        </div>
-      `).join('');
-      $('#massPreview').style.display = 'block';
-    } catch (err) {
-      showToast('Preview error: ' + err.message);
-    }
-  });
-
-  $('#btnMassStart')?.addEventListener('click', async () => {
-    const template = $('#fMassTemplate').value.trim();
-    const creators = parseMassList($('#fMassList').value);
-    const delaySeconds = Number($('#fMassDelay').value) || 45;
-    const maxPerRun = Number($('#fMassCap').value) || 30;
-    const reDmExisting = $('#fMassRedm').checked;
-
-    if (!template) { showToast('Message template is required'); return; }
-    if (!creators.length) { showToast('Add at least one creator'); return; }
-
-    if (delaySeconds < 15) {
-      if (!confirm('A delay under 15s can trip Instagram spam detection. Continue anyway?')) return;
-    }
-
-    const btn = $('#btnMassStart');
-    btn.disabled = true;
-    btn.textContent = 'Starting…';
-    try {
-      const res = await fetch(`/api/campaigns/${currentCampaign.id}/bulk-send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template, creators, delaySeconds, maxPerRun, reDmExisting }),
-      });
-      const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Failed to start', 8000); return; }
-
-      massJobId = data.jobId;
-      $('#massStep1').style.display = 'none';
-      $('#massStep2').style.display = 'block';
-      $('#massTotal').textContent = data.total;
-      $('#massSent').textContent = '0';
-      $('#massFailed').textContent = '0';
-      $('#massSkipped').textContent = '0';
-      $('#massProgressBar').style.width = '0%';
-      $('#massLog').innerHTML = '';
-      startMassPolling();
-      showToast(`Outreach started for ${data.total} creator(s)`);
-    } catch (err) {
-      showToast('Error: ' + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Start Outreach';
-    }
-  });
-
-  function startMassPolling() {
-    if (massPollTimer) clearInterval(massPollTimer);
-    pollMassJob();
-    massPollTimer = setInterval(pollMassJob, 3000);
-  }
-
-  async function pollMassJob() {
-    if (!massJobId) return;
-    try {
-      const res = await fetch(`/api/bulk-jobs/${massJobId}`);
-      if (!res.ok) return;
-      const job = await res.json();
-
-      $('#massSent').textContent = job.sent || 0;
-      $('#massFailed').textContent = job.failed || 0;
-      $('#massSkipped').textContent = job.skipped || 0;
-      $('#massTotal').textContent = job.total || 0;
-
-      const processed = (job.sent || 0) + (job.failed || 0) + (job.skipped || 0);
-      const pct = job.total ? Math.round((processed / job.total) * 100) : 0;
-      $('#massProgressBar').style.width = pct + '%';
-
-      $('#massJobStatus').textContent = {
-        running: `Running… ${processed}/${job.total}`,
-        completed: `Completed · ${job.sent} sent, ${job.failed} failed, ${job.skipped} skipped`,
-        stopped: 'Stopped by user',
-        failed: 'Job failed',
-      }[job.status] || job.status;
-
-      const logEl = $('#massLog');
-      logEl.innerHTML = (job.log || []).slice(-100).map(e => {
-        const time = new Date(e.at).toLocaleTimeString();
-        return `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${e.type === 'error' ? 'error' : e.type === 'success' ? 'action' : 'info'}">${esc(e.msg)}</span></div>`;
-      }).join('');
-      logEl.scrollTop = logEl.scrollHeight;
-
-      if (job.status !== 'running') {
-        clearInterval(massPollTimer);
-        massPollTimer = null;
-        if (job.status === 'completed' || job.status === 'stopped') {
-          loadNegotiations();
-        }
-      }
-    } catch (err) {
-      console.error('Poll error:', err);
-    }
-  }
-
-  $('#btnMassStop')?.addEventListener('click', async () => {
-    if (!massJobId) return;
-    if (!confirm('Stop the bulk outreach? Messages already sent will remain.')) return;
-    try {
-      await fetch(`/api/bulk-jobs/${massJobId}/stop`, { method: 'POST' });
-      showToast('Stop requested');
-    } catch (err) {
-      showToast('Failed to stop: ' + err.message);
-    }
-  });
-
-  $('#btnMassDone')?.addEventListener('click', () => {
-    $('#massOverlay').style.display = 'none';
-    if (massPollTimer) { clearInterval(massPollTimer); massPollTimer = null; }
-    loadNegotiations();
   });
 
   // ═══════════════════════════════════════════════════════

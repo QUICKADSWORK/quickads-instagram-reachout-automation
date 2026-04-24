@@ -753,3 +753,18 @@ select {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .container { padding: 20px 16px 60px; }
 }
+
+/* ─── Mode toggle (Add Influencers) ───────────────────── */
+.mode-btn {
+  transition: background 0.2s, color 0.2s;
+}
+.mode-btn-active {
+  background: linear-gradient(135deg, rgba(168,85,247,0.2), rgba(236,72,153,0.2)) !important;
+  color: var(--text) !important;
+  box-shadow: 0 0 0 1px rgba(168,85,247,0.3);
+}
+.mode-btn:not(.mode-btn-active):hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+}
+
