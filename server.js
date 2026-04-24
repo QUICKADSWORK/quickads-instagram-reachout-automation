@@ -344,34 +344,20 @@ app.post('/api/negotiations/:id/send', async (req, res) => {
     const neg = negotiations.find(n => n.id === req.params.id);
     if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
 
-    const cookies = readDB('instagram_cookies.json');
-    if (!cookies || !cookies.length) {
-      return res.status(400).json({ error: 'Instagram cookies not configured. Go to Settings to add them.' });
+    const cookies = loadCookies();
+    const cookieCheck = validateCookies(cookies);
+    if (!cookieCheck.ok) {
+      return res.status(400).json({ error: cookieCheck.error });
     }
 
-    const actorId = 'am_production~instagram-direct-messages-dms-automation';
-    const actorInput = {
-      INSTAGRAM_COOKIES: cookies,
-      influencers: [neg.username],
-      messages: [message],
-    };
-
-    const startRes = await fetch(
-      `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(actorInput),
-        signal: AbortSignal.timeout(120000),
-      }
-    );
-
-    if (!startRes.ok) {
-      const errBody = await startRes.text();
-      return res.status(500).json({ error: `Apify DM error: ${errBody}` });
+    const sendResult = await sendDMviaApify(cookies, neg.username, message);
+    if (!sendResult.ok) {
+      return res.status(500).json({
+        error: sendResult.error,
+        details: sendResult.details,
+        rawResult: sendResult.raw,
+      });
     }
-
-    const result = await startRes.json();
 
     neg.messages.push({
       role: 'you',
@@ -382,8 +368,9 @@ app.post('/api/negotiations/:id/send', async (req, res) => {
     neg.updatedAt = new Date().toISOString();
     writeDB('negotiations.json', negotiations);
 
-    res.json({ ok: true, result, negotiation: neg });
+    res.json({ ok: true, result: sendResult.raw, negotiation: neg });
   } catch (err) {
+    console.error('DM send error:', err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -438,9 +425,158 @@ app.patch('/api/negotiations/:id', (req, res) => {
 //  Instagram Cookies Management
 // ═══════════════════════════════════════════════════════════
 
+const REQUIRED_COOKIE_NAMES = ['sessionid', 'ds_user_id', 'csrftoken'];
+
+// Load cookies from disk, falling back to INSTAGRAM_COOKIES env var
+// (env var is useful on ephemeral hosts like Render free tier where
+//  the data/ folder is wiped on every cold start / redeploy).
+function loadCookies() {
+  try {
+    const onDisk = readDB('instagram_cookies.json');
+    if (Array.isArray(onDisk) && onDisk.length) return onDisk;
+  } catch (_) {}
+
+  const envRaw = process.env.INSTAGRAM_COOKIES;
+  if (envRaw) {
+    try {
+      const parsed = JSON.parse(envRaw);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch (err) {
+      console.error('INSTAGRAM_COOKIES env var is set but not valid JSON:', err.message);
+    }
+  }
+  return [];
+}
+
+function validateCookies(cookies) {
+  if (!Array.isArray(cookies) || !cookies.length) {
+    return { ok: false, error: 'Instagram cookies not configured. Go to Settings to add them.' };
+  }
+  const names = new Set(cookies.map(c => (c && c.name) || '').filter(Boolean));
+  const missing = REQUIRED_COOKIE_NAMES.filter(n => !names.has(n));
+  if (missing.length) {
+    return {
+      ok: false,
+      error: `Cookies are missing required keys: ${missing.join(', ')}. Re-export cookies from Instagram while logged in and paste the full JSON array.`,
+    };
+  }
+  return { ok: true };
+}
+
+// Send a single DM via the Apify actor and carefully parse the result so
+// we actually report failures instead of always returning success.
+async function sendDMviaApify(cookies, username, message) {
+  const actorId = 'am_production~instagram-direct-messages-dms-automation';
+  const actorInput = {
+    INSTAGRAM_COOKIES: cookies,
+    influencers: [username],
+    messages: [message],
+  };
+
+  let startRes;
+  try {
+    startRes = await fetch(
+      `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(actorInput),
+        signal: AbortSignal.timeout(180000),
+      }
+    );
+  } catch (err) {
+    return { ok: false, error: `Could not reach Apify: ${err.message}` };
+  }
+
+  const rawText = await startRes.text();
+  let parsed;
+  try { parsed = JSON.parse(rawText); } catch (_) { parsed = rawText; }
+
+  if (!startRes.ok) {
+    const msg = (parsed && parsed.error && (parsed.error.message || parsed.error)) || rawText.slice(0, 400);
+    return {
+      ok: false,
+      error: `Apify API error (${startRes.status}): ${msg}`,
+      raw: parsed,
+    };
+  }
+
+  // run-sync-get-dataset-items returns an array of dataset items.
+  // The actor pushes one item per influencer with success/failure info.
+  const items = Array.isArray(parsed) ? parsed : [];
+  if (!items.length) {
+    return {
+      ok: false,
+      error: 'Apify actor returned no dataset items. The actor may not have pushed results (subscription expired, timeout, or cookies rejected by Instagram).',
+      raw: parsed,
+    };
+  }
+
+  // Try to find an item for this username, else use the first.
+  const item = items.find(it =>
+    it && typeof it === 'object' &&
+    [it.username, it.influencer, it.user, it.handle]
+      .filter(Boolean)
+      .some(v => String(v).toLowerCase() === username.toLowerCase())
+  ) || items[0];
+
+  const success = detectActorSuccess(item);
+  if (!success.ok) {
+    return {
+      ok: false,
+      error: `Instagram DM not delivered: ${success.reason}`,
+      details: item,
+      raw: parsed,
+    };
+  }
+
+  return { ok: true, raw: parsed, details: item };
+}
+
+// The actor's output schema isn't strict — it returns free-form messages.
+// Look at common fields to decide if the send succeeded.
+function detectActorSuccess(item) {
+  if (!item || typeof item !== 'object') {
+    return { ok: false, reason: 'Actor returned no structured result.' };
+  }
+
+  if (typeof item.success === 'boolean') {
+    return item.success
+      ? { ok: true }
+      : { ok: false, reason: item.error || item.message || item.reason || 'Actor reported success=false.' };
+  }
+  if (item.status) {
+    const s = String(item.status).toLowerCase();
+    if (['sent', 'success', 'ok', 'delivered'].some(k => s.includes(k))) return { ok: true };
+    if (['fail', 'error', 'blocked', 'invalid', 'expired', 'unauthorized', 'rate'].some(k => s.includes(k))) {
+      return { ok: false, reason: item.error || item.message || item.status };
+    }
+  }
+  if (item.error || item.errorMessage) {
+    return { ok: false, reason: item.error || item.errorMessage };
+  }
+  const msg = String(item.message || item.result || '').toLowerCase();
+  if (msg && /(fail|error|not sent|could not|invalid|expired|unauthorized|block)/.test(msg)) {
+    return { ok: false, reason: item.message || item.result };
+  }
+  // If nothing indicates failure, assume success.
+  return { ok: true };
+}
+
 app.get('/api/settings/cookies', (req, res) => {
-  const cookies = readDB('instagram_cookies.json');
-  res.json({ hasCookies: cookies.length > 0, count: cookies.length });
+  const cookies = loadCookies();
+  const check = validateCookies(cookies);
+  res.json({
+    hasCookies: cookies.length > 0,
+    count: cookies.length,
+    valid: check.ok,
+    error: check.ok ? null : check.error,
+    source: cookies.length
+      ? (fs.existsSync(path.join(DATA_DIR, 'instagram_cookies.json')) && readDB('instagram_cookies.json').length
+          ? 'disk'
+          : 'env')
+      : null,
+  });
 });
 
 app.post('/api/settings/cookies', (req, res) => {
@@ -448,8 +584,56 @@ app.post('/api/settings/cookies', (req, res) => {
   if (!cookies || !Array.isArray(cookies)) {
     return res.status(400).json({ error: 'Cookies must be a JSON array.' });
   }
+  const check = validateCookies(cookies);
+  if (!check.ok) {
+    return res.status(400).json({ error: check.error });
+  }
   writeDB('instagram_cookies.json', cookies);
   res.json({ ok: true, count: cookies.length });
+});
+
+// Diagnostic: verify cookies actually work against Instagram right now
+app.post('/api/settings/cookies/test', async (req, res) => {
+  const cookies = loadCookies();
+  const check = validateCookies(cookies);
+  if (!check.ok) return res.status(400).json({ ok: false, error: check.error });
+
+  try {
+    const inbox = await fetchInstagramInbox(cookies);
+    const threadCount = inbox?.inbox?.threads?.length ?? 0;
+    const viewer = inbox?.viewer || inbox?.inbox?.viewer || null;
+    res.json({
+      ok: true,
+      threadCount,
+      username: viewer?.username || null,
+      message: `Instagram reachable. Found ${threadCount} threads in inbox.`,
+    });
+  } catch (err) {
+    res.status(400).json({
+      ok: false,
+      error: `Instagram rejected these cookies: ${err.message}. They are likely expired — log out and log back in on Instagram, then re-export.`,
+    });
+  }
+});
+
+// Diagnostic: send a test DM to any username without touching negotiations
+app.post('/api/settings/test-dm', async (req, res) => {
+  const { username, message } = req.body || {};
+  if (!username || !message) {
+    return res.status(400).json({ error: 'username and message are required' });
+  }
+
+  const cookies = loadCookies();
+  const check = validateCookies(cookies);
+  if (!check.ok) return res.status(400).json({ error: check.error });
+
+  if (!APIFY_TOKEN) {
+    return res.status(400).json({ error: 'APIFY_TOKEN is not set on the server.' });
+  }
+
+  const result = await sendDMviaApify(cookies, String(username).replace(/^@/, ''), message);
+  if (!result.ok) return res.status(500).json(result);
+  res.json(result);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -556,10 +740,9 @@ async function fetchInstagramThread(cookies, threadId) {
 // Poll inbox, find new replies, auto-generate & send AI responses
 app.post('/api/autopilot/poll', async (req, res) => {
   try {
-    const cookies = readDB('instagram_cookies.json');
-    if (!cookies || !cookies.length) {
-      return res.status(400).json({ error: 'Instagram cookies not configured.' });
-    }
+    const cookies = loadCookies();
+    const check = validateCookies(cookies);
+    if (!check.ok) return res.status(400).json({ error: check.error });
 
     const negotiations = readDB('negotiations.json');
     const activeNegs = negotiations.filter(n =>
@@ -659,10 +842,9 @@ app.post('/api/autopilot/poll', async (req, res) => {
 // Full autopilot: poll → detect replies → generate AI response → send DM
 app.post('/api/autopilot/run', async (req, res) => {
   try {
-    const cookies = readDB('instagram_cookies.json');
-    if (!cookies || !cookies.length) {
-      return res.status(400).json({ error: 'Instagram cookies not configured.' });
-    }
+    const cookies = loadCookies();
+    const check = validateCookies(cookies);
+    if (!check.ok) return res.status(400).json({ error: check.error });
 
     // Step 1: Poll for new replies
     const negotiations = readDB('negotiations.json');
@@ -793,27 +975,18 @@ app.post('/api/autopilot/run', async (req, res) => {
 
       // Step 3: Send DM via Apify
       try {
-        const actorId = 'am_production~instagram-direct-messages-dms-automation';
-        const sendRes = await fetch(
-          `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              INSTAGRAM_COOKIES: cookies,
-              influencers: [neg.username],
-              messages: [aiMessage],
-            }),
-            signal: AbortSignal.timeout(120000),
-          }
-        );
-
-        if (!sendRes.ok) {
-          results.push({ username: neg.username, status: 'send_failed', aiMessage });
+        const sendResult = await sendDMviaApify(cookies, neg.username, aiMessage);
+        if (!sendResult.ok) {
+          results.push({
+            username: neg.username,
+            status: 'send_failed',
+            error: sendResult.error,
+            details: sendResult.details,
+            aiMessage,
+          });
           continue;
         }
 
-        // Record the sent message
         neg.messages.push({
           role: 'you',
           content: aiMessage,

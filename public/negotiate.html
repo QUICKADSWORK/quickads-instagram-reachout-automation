@@ -270,13 +270,32 @@
         <button id="settingsClose" class="modal-close">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">Paste your Instagram cookies (JSON array) here. These are needed to send DMs via the Apify automation actor.</p>
+        <p class="modal-hint">Paste your Instagram cookies (JSON array) here. These are needed to send DMs via the Apify automation actor. Required cookies: <code>sessionid</code>, <code>ds_user_id</code>, <code>csrftoken</code>.</p>
         <div class="form-group">
           <label for="fCookies">Instagram Cookies (JSON)</label>
           <textarea id="fCookies" rows="8" placeholder='[{"name":"sessionid","value":"...","domain":".instagram.com",...}]'></textarea>
         </div>
         <div id="cookieStatus" class="cookie-status"></div>
-        <button id="btnSaveCookies" class="btn btn-primary btn-lg">Save Cookies</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <button id="btnSaveCookies" class="btn btn-primary">Save Cookies</button>
+          <button id="btnTestCookies" class="btn btn-outline" type="button">Test Cookies (Inbox Check)</button>
+        </div>
+
+        <hr style="margin:18px 0;border:none;border-top:1px solid rgba(255,255,255,0.08);" />
+
+        <p class="modal-hint">Troubleshoot: send a real test DM to verify the Apify actor + cookies are working end-to-end.</p>
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label for="fTestUsername">Test Username</label>
+            <input type="text" id="fTestUsername" placeholder="your_other_account" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="fTestMessage">Test Message</label>
+          <textarea id="fTestMessage" rows="2" placeholder="Test DM from QuickAds — ignore."></textarea>
+        </div>
+        <button id="btnTestDM" class="btn btn-outline" type="button">Send Test DM</button>
+        <pre id="testDmResult" style="display:none;margin-top:12px;padding:10px;background:rgba(0,0,0,0.25);border-radius:8px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
       </div>
     </div>
   </div>

@@ -414,7 +414,8 @@
       const data = await res.json();
 
       if (!res.ok) {
-        showToast(data.error || 'Failed to send DM');
+        showToast(data.error || 'Failed to send DM', 8000);
+        console.error('DM send failed:', data);
         return;
       }
 
@@ -470,15 +471,18 @@
   // ═══════════════════════════════════════════════════════
 
   async function checkCookies() {
-    let data = { hasCookies: false, count: 0 };
+    let data = { hasCookies: false, count: 0, valid: false };
     try {
       const res = await fetch('/api/settings/cookies');
       if (res.ok) data = await res.json();
     } catch {}
     const el = $('#cookieStatus');
-    if (data.hasCookies) {
+    if (data.hasCookies && data.valid) {
       el.className = 'cookie-status has-cookies';
-      el.textContent = `Instagram cookies configured (${data.count} cookies)`;
+      el.textContent = `Instagram cookies configured (${data.count} cookies, source: ${data.source || 'disk'})`;
+    } else if (data.hasCookies && !data.valid) {
+      el.className = 'cookie-status no-cookies';
+      el.textContent = data.error || 'Cookies are incomplete. Re-export and paste again.';
     } else {
       el.className = 'cookie-status no-cookies';
       el.textContent = 'No Instagram cookies configured yet. DM sending will not work.';
@@ -513,14 +517,72 @@
       body: JSON.stringify({ cookies }),
     });
 
+    const data = await res.json().catch(() => ({}));
     if (res.ok) {
       showToast('Cookies saved!');
       checkCookies();
       $('#fCookies').value = '';
     } else {
-      showToast('Failed to save cookies');
+      showToast(data.error || 'Failed to save cookies', 6000);
     }
   });
+
+  const btnTestCookies = $('#btnTestCookies');
+  if (btnTestCookies) {
+    btnTestCookies.addEventListener('click', async () => {
+      btnTestCookies.disabled = true;
+      btnTestCookies.textContent = 'Testing...';
+      try {
+        const res = await fetch('/api/settings/cookies/test', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          showToast(`Cookies work! ${data.username ? '@' + data.username + ' · ' : ''}${data.threadCount} threads.`, 5000);
+        } else {
+          showToast(data.error || 'Cookie test failed', 8000);
+        }
+      } catch (err) {
+        showToast('Test failed: ' + err.message, 6000);
+      } finally {
+        btnTestCookies.disabled = false;
+        btnTestCookies.textContent = 'Test Cookies (Inbox Check)';
+      }
+    });
+  }
+
+  const btnTestDM = $('#btnTestDM');
+  if (btnTestDM) {
+    btnTestDM.addEventListener('click', async () => {
+      const username = $('#fTestUsername').value.trim().replace(/^@/, '');
+      const message = $('#fTestMessage').value.trim();
+      const out = $('#testDmResult');
+      if (!username || !message) { showToast('Fill in username and message'); return; }
+
+      btnTestDM.disabled = true;
+      btnTestDM.textContent = 'Sending...';
+      out.style.display = 'block';
+      out.textContent = 'Sending test DM, please wait (can take up to 3 minutes)...';
+      try {
+        const res = await fetch('/api/settings/test-dm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, message }),
+        });
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+        if (res.ok && data.ok) {
+          showToast('Test DM delivered!', 5000);
+        } else {
+          showToast(data.error || 'Test DM failed', 8000);
+        }
+      } catch (err) {
+        out.textContent = 'Error: ' + err.message;
+        showToast('Error: ' + err.message, 6000);
+      } finally {
+        btnTestDM.disabled = false;
+        btnTestDM.textContent = 'Send Test DM';
+      }
+    });
+  }
 
   // Close modals on overlay click
   $$('.modal-overlay').forEach(overlay => {

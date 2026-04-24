@@ -10,5 +10,10 @@ services:
         sync: false
       - key: CLAUDE_API_KEY
         sync: false
+      # Optional: paste the Instagram cookies JSON array here as a single
+      # env var so it survives Render cold starts / redeploys (the data/
+      # folder is ephemeral on the free tier).
+      - key: INSTAGRAM_COOKIES
+        sync: false
       - key: NODE_VERSION
         value: 18.20.8
