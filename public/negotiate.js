@@ -484,6 +484,220 @@
   });
 
   // ═══════════════════════════════════════════════════════
+  //  Mass Outreach
+  // ═══════════════════════════════════════════════════════
+
+  const MASS_VARS = [
+    'first_name', 'username', 'full_name', 'followers', 'category',
+    'brand', 'product', 'collab_type', 'budget_min', 'budget_max'
+  ];
+
+  let massPollTimer = null;
+  let massJobId = null;
+
+  function parseMassList(raw) {
+    const text = (raw || '').trim();
+    if (!text) return [];
+
+    // Allow JSON array paste
+    if (text.startsWith('[')) {
+      try {
+        const arr = JSON.parse(text);
+        if (Array.isArray(arr)) {
+          return arr.map(c => typeof c === 'string'
+            ? { username: c.replace(/^@/, '').trim() }
+            : {
+                username: String(c.username || c.handle || '').replace(/^@/, '').trim(),
+                fullName: c.fullName || c.name || '',
+                followers: c.followers || 0,
+                category: c.category || '',
+                email: c.email || '',
+              }
+          ).filter(c => c.username);
+        }
+      } catch {}
+    }
+
+    return text.split('\n').map(line => {
+      const [unameRaw, ...rest] = line.split(',');
+      const uname = (unameRaw || '').replace(/^@/, '').trim();
+      if (!uname) return null;
+      return { username: uname, fullName: rest.join(',').trim() };
+    }).filter(Boolean);
+  }
+
+  function renderVarChips() {
+    const host = $('#massVarChips');
+    if (!host) return;
+    host.innerHTML = MASS_VARS.map(v =>
+      `<button type="button" class="btn btn-outline btn-sm" data-var="${v}" style="padding:4px 10px;font-size:12px;">{{${v}}}</button>`
+    ).join('');
+    host.querySelectorAll('button[data-var]').forEach(b => {
+      b.addEventListener('click', () => {
+        const ta = $('#fMassTemplate');
+        const token = `{{${b.dataset.var}}}`;
+        const start = ta.selectionStart || ta.value.length;
+        const end = ta.selectionEnd || ta.value.length;
+        ta.value = ta.value.slice(0, start) + token + ta.value.slice(end);
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = start + token.length;
+      });
+    });
+  }
+
+  $('#btnMassOutreach')?.addEventListener('click', () => {
+    $('#massOverlay').style.display = 'flex';
+    $('#massStep1').style.display = 'block';
+    $('#massStep2').style.display = 'none';
+    $('#massPreview').style.display = 'none';
+    massJobId = null;
+    if (massPollTimer) { clearInterval(massPollTimer); massPollTimer = null; }
+    renderVarChips();
+  });
+
+  $('#massClose')?.addEventListener('click', () => {
+    $('#massOverlay').style.display = 'none';
+    if (massPollTimer) { clearInterval(massPollTimer); massPollTimer = null; }
+  });
+
+  $('#btnMassPreview')?.addEventListener('click', async () => {
+    const template = $('#fMassTemplate').value;
+    const creators = parseMassList($('#fMassList').value).slice(0, 3);
+    if (!template.trim()) { showToast('Write a message template first'); return; }
+    if (!creators.length) { showToast('Add at least one creator'); return; }
+
+    try {
+      const res = await fetch('/api/templates/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template, creators, campaignId: currentCampaign.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Preview failed'); return; }
+      const body = $('#massPreviewBody');
+      body.innerHTML = data.previews.map(p => `
+        <div style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:8px;">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">@${esc(p.username)}${p.fullName ? ' · ' + esc(p.fullName) : ''}</div>
+          <div style="white-space:pre-wrap;">${esc(p.rendered)}</div>
+        </div>
+      `).join('');
+      $('#massPreview').style.display = 'block';
+    } catch (err) {
+      showToast('Preview error: ' + err.message);
+    }
+  });
+
+  $('#btnMassStart')?.addEventListener('click', async () => {
+    const template = $('#fMassTemplate').value.trim();
+    const creators = parseMassList($('#fMassList').value);
+    const delaySeconds = Number($('#fMassDelay').value) || 45;
+    const maxPerRun = Number($('#fMassCap').value) || 30;
+    const reDmExisting = $('#fMassRedm').checked;
+
+    if (!template) { showToast('Message template is required'); return; }
+    if (!creators.length) { showToast('Add at least one creator'); return; }
+
+    if (delaySeconds < 15) {
+      if (!confirm('A delay under 15s can trip Instagram spam detection. Continue anyway?')) return;
+    }
+
+    const btn = $('#btnMassStart');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    try {
+      const res = await fetch(`/api/campaigns/${currentCampaign.id}/bulk-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template, creators, delaySeconds, maxPerRun, reDmExisting }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Failed to start', 8000); return; }
+
+      massJobId = data.jobId;
+      $('#massStep1').style.display = 'none';
+      $('#massStep2').style.display = 'block';
+      $('#massTotal').textContent = data.total;
+      $('#massSent').textContent = '0';
+      $('#massFailed').textContent = '0';
+      $('#massSkipped').textContent = '0';
+      $('#massProgressBar').style.width = '0%';
+      $('#massLog').innerHTML = '';
+      startMassPolling();
+      showToast(`Outreach started for ${data.total} creator(s)`);
+    } catch (err) {
+      showToast('Error: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Start Outreach';
+    }
+  });
+
+  function startMassPolling() {
+    if (massPollTimer) clearInterval(massPollTimer);
+    pollMassJob();
+    massPollTimer = setInterval(pollMassJob, 3000);
+  }
+
+  async function pollMassJob() {
+    if (!massJobId) return;
+    try {
+      const res = await fetch(`/api/bulk-jobs/${massJobId}`);
+      if (!res.ok) return;
+      const job = await res.json();
+
+      $('#massSent').textContent = job.sent || 0;
+      $('#massFailed').textContent = job.failed || 0;
+      $('#massSkipped').textContent = job.skipped || 0;
+      $('#massTotal').textContent = job.total || 0;
+
+      const processed = (job.sent || 0) + (job.failed || 0) + (job.skipped || 0);
+      const pct = job.total ? Math.round((processed / job.total) * 100) : 0;
+      $('#massProgressBar').style.width = pct + '%';
+
+      $('#massJobStatus').textContent = {
+        running: `Running… ${processed}/${job.total}`,
+        completed: `Completed · ${job.sent} sent, ${job.failed} failed, ${job.skipped} skipped`,
+        stopped: 'Stopped by user',
+        failed: 'Job failed',
+      }[job.status] || job.status;
+
+      const logEl = $('#massLog');
+      logEl.innerHTML = (job.log || []).slice(-100).map(e => {
+        const time = new Date(e.at).toLocaleTimeString();
+        return `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${e.type === 'error' ? 'error' : e.type === 'success' ? 'action' : 'info'}">${esc(e.msg)}</span></div>`;
+      }).join('');
+      logEl.scrollTop = logEl.scrollHeight;
+
+      if (job.status !== 'running') {
+        clearInterval(massPollTimer);
+        massPollTimer = null;
+        if (job.status === 'completed' || job.status === 'stopped') {
+          loadNegotiations();
+        }
+      }
+    } catch (err) {
+      console.error('Poll error:', err);
+    }
+  }
+
+  $('#btnMassStop')?.addEventListener('click', async () => {
+    if (!massJobId) return;
+    if (!confirm('Stop the bulk outreach? Messages already sent will remain.')) return;
+    try {
+      await fetch(`/api/bulk-jobs/${massJobId}/stop`, { method: 'POST' });
+      showToast('Stop requested');
+    } catch (err) {
+      showToast('Failed to stop: ' + err.message);
+    }
+  });
+
+  $('#btnMassDone')?.addEventListener('click', () => {
+    $('#massOverlay').style.display = 'none';
+    if (massPollTimer) { clearInterval(massPollTimer); massPollTimer = null; }
+    loadNegotiations();
+  });
+
+  // ═══════════════════════════════════════════════════════
   //  Settings (Cookies)
   // ═══════════════════════════════════════════════════════
 
