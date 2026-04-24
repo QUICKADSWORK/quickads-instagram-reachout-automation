@@ -267,6 +267,331 @@ app.delete('/api/campaigns/:id', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  Mass Outreach: template rendering + bulk-send job runner
+// ═══════════════════════════════════════════════════════════
+
+function extractFirstName(fullName, username) {
+  const base = (fullName || '').trim();
+  if (base) {
+    const clean = base.replace(/[🔥✨⭐️•·|\\/()\[\]]+/g, ' ').trim();
+    const first = clean.split(/\s+/)[0];
+    if (first && first.length >= 2) {
+      return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+    }
+  }
+  // Fallback: try to humanize the username (e.g. "aryan_fitness" → "Aryan")
+  const uname = (username || '').split(/[._\-0-9]/)[0];
+  if (uname && uname.length >= 2) {
+    return uname.charAt(0).toUpperCase() + uname.slice(1).toLowerCase();
+  }
+  return 'there';
+}
+
+function renderTemplate(template, ctx) {
+  if (!template) return '';
+  return String(template).replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g, (_, key) => {
+    const v = ctx[key];
+    return v === undefined || v === null ? '' : String(v);
+  });
+}
+
+function buildTemplateContext(creator, campaign) {
+  const firstName = extractFirstName(creator.fullName, creator.username);
+  return {
+    first_name: firstName,
+    firstname: firstName,
+    name: creator.fullName || firstName,
+    full_name: creator.fullName || firstName,
+    username: creator.username || '',
+    handle: '@' + (creator.username || ''),
+    followers: creator.followers != null ? Number(creator.followers).toLocaleString() : '',
+    category: creator.category || '',
+    email: creator.email || '',
+    brand: campaign.brandName || '',
+    product: campaign.productName || '',
+    collab_type: campaign.collabType || '',
+    budget_min: `${campaign.currency || ''} ${campaign.budgetMin ?? ''}`.trim(),
+    budget_max: `${campaign.currency || ''} ${campaign.budgetMax ?? ''}`.trim(),
+    currency: campaign.currency || '',
+  };
+}
+
+// In-memory bulk-job registry. Jobs are also mirrored to bulk_jobs.json
+// so progress survives a brief restart.
+const bulkJobs = new Map();
+const BULK_JOB_RETENTION_MS = 1000 * 60 * 60 * 24; // 24h
+
+function persistBulkJob(job) {
+  bulkJobs.set(job.id, job);
+  try {
+    const all = readDB('bulk_jobs.json');
+    const idx = all.findIndex(j => j.id === job.id);
+    const snapshot = { ...job, log: (job.log || []).slice(-200) };
+    if (idx === -1) all.push(snapshot); else all[idx] = snapshot;
+    const trimmed = all.filter(j => Date.now() - new Date(j.createdAt).getTime() < BULK_JOB_RETENTION_MS);
+    writeDB('bulk_jobs.json', trimmed);
+  } catch (err) {
+    console.error('persistBulkJob error:', err.message);
+  }
+}
+
+function jobLog(job, type, msg, meta) {
+  const entry = { at: new Date().toISOString(), type, msg, ...(meta ? { meta } : {}) };
+  job.log = job.log || [];
+  job.log.push(entry);
+  if (job.log.length > 500) job.log = job.log.slice(-500);
+}
+
+async function runBulkJob(jobId) {
+  const job = bulkJobs.get(jobId);
+  if (!job) return;
+
+  try {
+    const campaigns = readDB('campaigns.json');
+    const campaign = campaigns.find(c => c.id === job.campaignId);
+    if (!campaign) {
+      job.status = 'failed';
+      jobLog(job, 'error', 'Campaign not found.');
+      persistBulkJob(job);
+      return;
+    }
+
+    const cookies = loadCookies();
+    const check = validateCookies(cookies);
+    if (!check.ok) {
+      job.status = 'failed';
+      jobLog(job, 'error', check.error);
+      persistBulkJob(job);
+      return;
+    }
+
+    for (let i = 0; i < job.creators.length; i++) {
+      if (job.status === 'stopped') break;
+      job.currentIndex = i;
+      const creator = job.creators[i];
+      const uname = String(creator.username || '').replace(/^@/, '').trim();
+
+      if (!uname) {
+        job.skipped++;
+        jobLog(job, 'skipped', 'Empty username');
+        persistBulkJob(job);
+        continue;
+      }
+
+      const ctx = buildTemplateContext({ ...creator, username: uname }, campaign);
+      const message = renderTemplate(job.template, ctx).trim();
+
+      if (!message) {
+        job.skipped++;
+        jobLog(job, 'skipped', `@${uname}: template rendered empty`);
+        persistBulkJob(job);
+        continue;
+      }
+
+      // Skip if we already have a negotiation with this creator in this campaign
+      const negotiations = readDB('negotiations.json');
+      const existing = negotiations.find(n =>
+        n.campaignId === campaign.id && n.username.toLowerCase() === uname.toLowerCase()
+      );
+      if (existing && !job.options?.reDmExisting) {
+        job.skipped++;
+        jobLog(job, 'skipped', `@${uname}: already contacted in this campaign`);
+        persistBulkJob(job);
+        continue;
+      }
+
+      if (!acquireSendLock(`bulk:${campaign.id}:${uname}`)) {
+        job.skipped++;
+        jobLog(job, 'skipped', `@${uname}: another send in flight`);
+        persistBulkJob(job);
+        continue;
+      }
+
+      try {
+        jobLog(job, 'info', `→ @${uname}: ${message.slice(0, 80)}${message.length > 80 ? '…' : ''}`);
+        const result = await sendDMviaApify(cookies, uname, message);
+        if (!result.ok) {
+          job.failed++;
+          jobLog(job, 'error', `@${uname}: ${result.error}`);
+        } else {
+          job.sent++;
+          jobLog(job, 'success', `@${uname}: DM delivered`);
+
+          // Upsert the negotiation so it shows up in the campaign view
+          const fresh = readDB('negotiations.json');
+          const already = fresh.find(n =>
+            n.campaignId === campaign.id && n.username.toLowerCase() === uname.toLowerCase()
+          );
+          if (already) {
+            already.messages.push({
+              role: 'you',
+              content: message,
+              timestamp: new Date().toISOString(),
+              sentViaApify: true,
+              bulkJobId: job.id,
+            });
+            already.updatedAt = new Date().toISOString();
+          } else {
+            fresh.push({
+              id: genId(),
+              campaignId: campaign.id,
+              username: uname,
+              fullName: creator.fullName || '',
+              followers: creator.followers || 0,
+              category: creator.category || '',
+              email: creator.email || '',
+              status: 'contacted',
+              agreedPrice: null,
+              messages: [{
+                role: 'you',
+                content: message,
+                timestamp: new Date().toISOString(),
+                sentViaApify: true,
+                bulkJobId: job.id,
+              }],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          writeDB('negotiations.json', fresh);
+        }
+      } catch (err) {
+        job.failed++;
+        jobLog(job, 'error', `@${uname}: ${err.message}`);
+      } finally {
+        releaseSendLock(`bulk:${campaign.id}:${uname}`);
+      }
+
+      persistBulkJob(job);
+
+      // Respect the user's configured delay between DMs
+      if (i < job.creators.length - 1 && job.status !== 'stopped') {
+        const delayMs = Math.max(0, Number(job.delaySeconds) || 45) * 1000;
+        const endsAt = Date.now() + delayMs;
+        while (Date.now() < endsAt) {
+          if (job.status === 'stopped') break;
+          await new Promise(r => setTimeout(r, Math.min(1000, endsAt - Date.now())));
+        }
+      }
+    }
+
+    job.status = job.status === 'stopped' ? 'stopped' : 'completed';
+    job.finishedAt = new Date().toISOString();
+    jobLog(job, 'info', `Job ${job.status}. Sent=${job.sent} Failed=${job.failed} Skipped=${job.skipped}`);
+    persistBulkJob(job);
+  } catch (err) {
+    console.error('Bulk job fatal error:', err);
+    job.status = 'failed';
+    jobLog(job, 'error', `Fatal: ${err.message}`);
+    persistBulkJob(job);
+  }
+}
+
+app.post('/api/campaigns/:id/bulk-send', (req, res) => {
+  const campaigns = readDB('campaigns.json');
+  const campaign = campaigns.find(c => c.id === req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campaign not found.' });
+
+  const { template, creators, delaySeconds, maxPerRun, reDmExisting } = req.body || {};
+  if (!template || !template.trim()) {
+    return res.status(400).json({ error: 'Message template is required.' });
+  }
+  if (!Array.isArray(creators) || creators.length === 0) {
+    return res.status(400).json({ error: 'At least one creator is required.' });
+  }
+
+  // Early validation: require cookies to be configured before accepting the job
+  const cookies = loadCookies();
+  const check = validateCookies(cookies);
+  if (!check.ok) return res.status(400).json({ error: check.error });
+
+  const cap = Math.max(1, Math.min(500, Number(maxPerRun) || 30));
+  const trimmedCreators = creators
+    .map(c => (typeof c === 'string' ? { username: c } : c))
+    .filter(c => c && c.username)
+    .map(c => ({
+      username: String(c.username).replace(/^@/, '').trim(),
+      fullName: c.fullName || '',
+      followers: c.followers || 0,
+      category: c.category || '',
+      email: c.email || '',
+    }))
+    .filter(c => c.username)
+    .slice(0, cap);
+
+  if (!trimmedCreators.length) {
+    return res.status(400).json({ error: 'No valid usernames in the list.' });
+  }
+
+  const job = {
+    id: genId(),
+    campaignId: campaign.id,
+    template,
+    creators: trimmedCreators,
+    delaySeconds: Math.max(5, Math.min(600, Number(delaySeconds) || 45)),
+    options: { reDmExisting: !!reDmExisting },
+    status: 'running',
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    currentIndex: 0,
+    total: trimmedCreators.length,
+    log: [],
+    createdAt: new Date().toISOString(),
+  };
+
+  persistBulkJob(job);
+  jobLog(job, 'info', `Bulk outreach started — ${job.total} creators, ${job.delaySeconds}s delay.`);
+  persistBulkJob(job);
+
+  // Fire-and-forget; polled via /api/bulk-jobs/:id
+  runBulkJob(job.id).catch(err => {
+    console.error('runBulkJob unhandled:', err);
+  });
+
+  res.json({ jobId: job.id, total: job.total });
+});
+
+app.get('/api/bulk-jobs/:id', (req, res) => {
+  const inMem = bulkJobs.get(req.params.id);
+  if (inMem) return res.json(inMem);
+  const all = readDB('bulk_jobs.json');
+  const job = all.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found.' });
+  res.json(job);
+});
+
+app.post('/api/bulk-jobs/:id/stop', (req, res) => {
+  const job = bulkJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found or already completed.' });
+  if (job.status === 'running') {
+    job.status = 'stopped';
+    jobLog(job, 'info', 'Stop requested by user.');
+    persistBulkJob(job);
+  }
+  res.json({ ok: true, status: job.status });
+});
+
+app.post('/api/templates/preview', (req, res) => {
+  const { template, creators, campaignId } = req.body || {};
+  if (!template) return res.status(400).json({ error: 'template required' });
+  const campaigns = readDB('campaigns.json');
+  const campaign = campaigns.find(c => c.id === campaignId) || {};
+  const sample = (Array.isArray(creators) ? creators : []).slice(0, 3);
+  const previews = sample.map(c => {
+    const ctx = buildTemplateContext({
+      username: c.username || '',
+      fullName: c.fullName || '',
+      followers: c.followers,
+      category: c.category,
+      email: c.email,
+    }, campaign);
+    return { ...c, rendered: renderTemplate(template, ctx) };
+  });
+  res.json({ previews });
+});
+
+// ═══════════════════════════════════════════════════════════
 //  Negotiation Routes
 // ═══════════════════════════════════════════════════════════
 
