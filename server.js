@@ -37,6 +37,84 @@ function genId() {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  Anti-spam helpers: prevent duplicate DMs and enforce
+//  at-most 2 consecutive "you" messages per creator.
+// ═══════════════════════════════════════════════════════════
+
+const MAX_CONSECUTIVE_YOU = 2;
+const DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
+
+// In-flight locks keyed by negotiation id. Prevents two concurrent
+// send requests (double-click, overlapping autopilot ticks, etc.)
+// from both sending the same DM.
+const sendLocks = new Map();
+
+function acquireSendLock(negId) {
+  if (sendLocks.has(negId)) return false;
+  sendLocks.set(negId, Date.now());
+  return true;
+}
+
+function releaseSendLock(negId) {
+  sendLocks.delete(negId);
+}
+
+function normalizeForCompare(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Lightweight similarity: Dice coefficient on word bigrams.
+// Good enough to catch "INR 8,500 for this collaboration" vs
+// "INR 8,500 for the deliverable" as near-duplicates.
+function textSimilarity(a, b) {
+  const na = normalizeForCompare(a);
+  const nb = normalizeForCompare(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+
+  const bigrams = s => {
+    const words = s.split(' ');
+    if (words.length < 2) return new Set([s]);
+    const out = new Set();
+    for (let i = 0; i < words.length - 1; i++) out.add(words[i] + ' ' + words[i + 1]);
+    return out;
+  };
+
+  const A = bigrams(na);
+  const B = bigrams(nb);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const total = A.size + B.size;
+  return total === 0 ? 0 : (2 * inter) / total;
+}
+
+function countConsecutiveYou(messages) {
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'you') count++;
+    else break;
+  }
+  return count;
+}
+
+// Return the most similar prior "you" message (anywhere in the
+// thread) along with its similarity score. If we're about to send
+// something too close to what we already said, that's a spam signal.
+function findDuplicateYouMessage(messages, candidate) {
+  let best = { score: 0, message: null };
+  for (const m of messages) {
+    if (m.role !== 'you') continue;
+    const score = textSimilarity(m.content, candidate);
+    if (score > best.score) best = { score, message: m };
+  }
+  return best;
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Existing Scraper Routes
 // ═══════════════════════════════════════════════════════════
 
@@ -284,14 +362,11 @@ app.post('/api/negotiations/:id/generate', async (req, res) => {
     const neg = negotiations.find(n => n.id === req.params.id);
     if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
 
-    // Guard: max 3 consecutive sent messages without a creator reply
-    let consecutiveYou = 0;
-    for (let i = neg.messages.length - 1; i >= 0; i--) {
-      if (neg.messages[i].role === 'you') consecutiveYou++;
-      else break;
-    }
-    if (consecutiveYou >= 3) {
-      return res.status(400).json({ error: 'Already sent 3 messages in a row. Wait for the creator to reply before sending more.' });
+    const consecutiveYou = countConsecutiveYou(neg.messages);
+    if (consecutiveYou >= MAX_CONSECUTIVE_YOU) {
+      return res.status(400).json({
+        error: `Already sent ${consecutiveYou} messages in a row. Wait for the creator to reply before sending more — sending more would look spammy.`,
+      });
     }
 
     const campaigns = readDB('campaigns.json');
@@ -326,7 +401,14 @@ app.post('/api/negotiations/:id/generate', async (req, res) => {
     }
 
     const claudeData = await claudeRes.json();
-    const aiMessage = claudeData.content?.[0]?.text || '';
+    const aiMessage = (claudeData.content?.[0]?.text || '').trim();
+
+    if (/^wait\b/i.test(aiMessage) || aiMessage.toUpperCase() === 'WAIT') {
+      return res.status(400).json({
+        error: 'The AI decided not to send another message right now — the creator needs to reply first to avoid looking spammy.',
+        code: 'AI_SUGGESTS_WAIT',
+      });
+    }
 
     res.json({ message: aiMessage });
   } catch (err) {
@@ -336,13 +418,41 @@ app.post('/api/negotiations/:id/generate', async (req, res) => {
 
 // Send AI response via Apify DM actor
 app.post('/api/negotiations/:id/send', async (req, res) => {
-  try {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: 'Message is required.' });
+  const negId = req.params.id;
+  const { message, force } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'Message is required.' });
 
+  if (!acquireSendLock(negId)) {
+    return res.status(409).json({
+      error: 'A DM to this creator is already being sent. Please wait a moment before trying again.',
+    });
+  }
+
+  try {
     const negotiations = readDB('negotiations.json');
-    const neg = negotiations.find(n => n.id === req.params.id);
+    const neg = negotiations.find(n => n.id === negId);
     if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
+
+    const consecutiveYou = countConsecutiveYou(neg.messages);
+    if (consecutiveYou >= MAX_CONSECUTIVE_YOU) {
+      return res.status(400).json({
+        error: `You've already sent ${consecutiveYou} messages in a row to @${neg.username}. Wait for them to reply — sending another would look spammy.`,
+      });
+    }
+
+    // Duplicate / near-duplicate guard across the whole thread.
+    // "force: true" can override (e.g. user edits and explicitly re-sends).
+    if (!force) {
+      const dup = findDuplicateYouMessage(neg.messages, message);
+      if (dup.score >= DUPLICATE_SIMILARITY_THRESHOLD) {
+        return res.status(400).json({
+          error: `This message is ${(dup.score * 100).toFixed(0)}% similar to one you already sent. Sending near-duplicates makes the outreach look like spam. Edit the message or click "Regenerate" to rewrite it.`,
+          duplicateOf: dup.message?.content,
+          similarity: dup.score,
+          code: 'DUPLICATE_MESSAGE',
+        });
+      }
+    }
 
     const cookies = loadCookies();
     const cookieCheck = validateCookies(cookies);
@@ -359,19 +469,27 @@ app.post('/api/negotiations/:id/send', async (req, res) => {
       });
     }
 
-    neg.messages.push({
+    // Re-read in case something else touched the file during the send.
+    const freshDb = readDB('negotiations.json');
+    const fresh = freshDb.find(n => n.id === negId) || neg;
+    fresh.messages = fresh.messages || [];
+    fresh.messages.push({
       role: 'you',
       content: message,
       timestamp: new Date().toISOString(),
       sentViaApify: true,
     });
-    neg.updatedAt = new Date().toISOString();
-    writeDB('negotiations.json', negotiations);
+    fresh.updatedAt = new Date().toISOString();
+    const idx = freshDb.findIndex(n => n.id === negId);
+    if (idx !== -1) freshDb[idx] = fresh; else freshDb.push(fresh);
+    writeDB('negotiations.json', freshDb);
 
-    res.json({ ok: true, result: sendResult.raw, negotiation: neg });
+    res.json({ ok: true, result: sendResult.raw, negotiation: fresh });
   } catch (err) {
     console.error('DM send error:', err);
     return res.status(500).json({ error: err.message });
+  } finally {
+    releaseSendLock(negId);
   }
 });
 
@@ -670,11 +788,14 @@ NEGOTIATION RULES:
 5. When a deal is agreed, confirm deliverables and price in ONE concise message — don't repeat yourself
 6. If they decline, be graceful and leave the door open
 7. NEVER mention you are an AI. You handle partnerships for ${campaign.brandName}
-8. Do NOT send multiple messages saying the same thing. Be concise and avoid redundancy
-9. If you already confirmed the deal once, do NOT confirm again. Move to next steps (brief, timeline)
-10. CRITICAL: Try to cover everything in as few messages as possible. Avoid being repetitive or desperate — one clear, confident message is better than three
+8. ONE MESSAGE PER CREATOR REPLY — never send a follow-up DM until the creator writes back. Multiple rapid-fire DMs look like spam and get flagged by Instagram.
+9. NEVER repeat a price, offer, or phrasing you have already used. If the creator has gone quiet, do NOT re-pitch the same number — either ask a new question, offer something different, or stay silent.
+10. If the last 2 messages in the history are already from you ("assistant"), STOP. Output exactly the word: WAIT
+11. If you already confirmed the deal once, do NOT confirm again. Move to next steps (brief, timeline)
+12. Vary your wording. Never start two messages with the same opener (e.g. don't say "Great to hear from you!" twice)
+13. CRITICAL: Cover everything in as few messages as possible. One clear, confident message is better than three
 
-RESPOND WITH ONLY THE DM MESSAGE. No explanations, no metadata, just the message to send.`;
+RESPOND WITH ONLY THE DM MESSAGE. No explanations, no metadata, just the message to send. If rule 10 applies, output exactly: WAIT`;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -883,6 +1004,15 @@ app.post('/api/autopilot/run', async (req, res) => {
       const items = thread.items || [];
       if (!items.length) continue;
 
+      // Cooldown: if we just sent a DM less than 90 seconds ago, skip this
+      // creator. Instagram's inbox can lag, and without this we could race
+      // with our own last send and generate yet another follow-up.
+      const lastYou = [...neg.messages].reverse().find(m => m.role === 'you');
+      if (lastYou && Date.now() - new Date(lastYou.timestamp).getTime() < 90 * 1000) {
+        results.push({ username: neg.username, status: 'skipped', reason: 'Cooldown — sent a DM <90s ago.' });
+        continue;
+      }
+
       const lastKnownCreatorMsg = neg.messages.filter(m => m.role === 'creator').pop();
       const lastKnownTime = lastKnownCreatorMsg
         ? new Date(lastKnownCreatorMsg.timestamp).getTime()
@@ -916,18 +1046,19 @@ app.post('/api/autopilot/run', async (req, res) => {
       neg.updatedAt = new Date().toISOString();
       writeDB('negotiations.json', negotiations);
 
-      // Guard: max 3 consecutive "you" messages before this creator reply
-      // Count how many "you" messages were sent before this new creator reply
-      // (The creator just replied, so we're good to send ONE response — but
-      //  check if we somehow already have 3+ unanswered messages before this)
       const msgsBeforeThisReply = neg.messages.slice(0, -1);
-      let consecutiveYou = 0;
-      for (let i = msgsBeforeThisReply.length - 1; i >= 0; i--) {
-        if (msgsBeforeThisReply[i].role === 'you') consecutiveYou++;
-        else break;
+      const consecutiveYou = countConsecutiveYou(msgsBeforeThisReply);
+      if (consecutiveYou >= MAX_CONSECUTIVE_YOU) {
+        results.push({
+          username: neg.username,
+          status: 'skipped',
+          reason: `Already sent ${consecutiveYou} messages in a row — waiting for the creator to re-engage.`,
+        });
+        continue;
       }
-      if (consecutiveYou >= 3) {
-        results.push({ username: neg.username, status: 'skipped', reason: 'Already sent 3 messages, waiting for more input' });
+
+      if (!acquireSendLock(neg.id)) {
+        results.push({ username: neg.username, status: 'skipped', reason: 'A send is already in flight for this creator.' });
         continue;
       }
 
@@ -965,15 +1096,42 @@ app.post('/api/autopilot/run', async (req, res) => {
         }
 
         const claudeData = await claudeRes.json();
-        aiMessage = claudeData.content?.[0]?.text || '';
+        aiMessage = (claudeData.content?.[0]?.text || '').trim();
       } catch (err) {
+        releaseSendLock(neg.id);
         results.push({ username: neg.username, status: 'ai_failed', error: err.message });
         continue;
       }
 
-      if (!aiMessage) continue;
+      if (!aiMessage) {
+        releaseSendLock(neg.id);
+        continue;
+      }
 
-      // Step 3: Send DM via Apify
+      if (/^wait\b/i.test(aiMessage) || aiMessage.toUpperCase() === 'WAIT') {
+        releaseSendLock(neg.id);
+        results.push({
+          username: neg.username,
+          status: 'skipped',
+          reason: 'AI chose to wait — sending another message now would look spammy.',
+        });
+        continue;
+      }
+
+      // Anti-spam: don't send a DM that's near-identical to one we
+      // already sent in this thread.
+      const dup = findDuplicateYouMessage(neg.messages, aiMessage);
+      if (dup.score >= DUPLICATE_SIMILARITY_THRESHOLD) {
+        releaseSendLock(neg.id);
+        results.push({
+          username: neg.username,
+          status: 'skipped',
+          reason: `AI draft is ${(dup.score * 100).toFixed(0)}% similar to a message already sent. Skipping to avoid spammy duplicates.`,
+          aiMessage,
+        });
+        continue;
+      }
+
       try {
         const sendResult = await sendDMviaApify(cookies, neg.username, aiMessage);
         if (!sendResult.ok) {
@@ -1005,9 +1163,10 @@ app.post('/api/autopilot/run', async (req, res) => {
         });
       } catch (err) {
         results.push({ username: neg.username, status: 'send_failed', error: err.message, aiMessage });
+      } finally {
+        releaseSendLock(neg.id);
       }
 
-      // Rate limit: 3 second pause between DMs
       await new Promise(r => setTimeout(r, 3000));
     }
 

@@ -395,7 +395,16 @@
     }
   });
 
-  // Send AI response via Apify DM
+  async function doSendDM(message, { force = false } = {}) {
+    const res = await fetch(`/api/negotiations/${currentNeg.id}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, force }),
+    });
+    const data = await res.json();
+    return { res, data };
+  }
+
   $('#btnSendAI').addEventListener('click', async () => {
     const message = $('#aiResponseText').textContent.trim();
     if (!message) { showToast('No message to send'); return; }
@@ -405,13 +414,21 @@
     btn.innerHTML = '<span class="spinner"></span> Sending...';
 
     try {
-      const res = await fetch(`/api/negotiations/${currentNeg.id}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
+      let { res, data } = await doSendDM(message);
 
-      const data = await res.json();
+      if (!res.ok && data.code === 'DUPLICATE_MESSAGE') {
+        const pct = Math.round((data.similarity || 0) * 100);
+        const ok = confirm(
+          `This message is ${pct}% similar to one you already sent@${currentNeg.username}:\n\n` +
+          `"${(data.duplicateOf || '').slice(0, 200)}"\n\n` +
+          `Sending near-duplicates looks like spam. Send anyway?`
+        );
+        if (!ok) {
+          showToast('Send cancelled. Try "Regenerate" to get a different draft.', 6000);
+          return;
+        }
+        ({ res, data } = await doSendDM(message, { force: true }));
+      }
 
       if (!res.ok) {
         showToast(data.error || 'Failed to send DM', 8000);
@@ -644,6 +661,8 @@
           logAutopilot(`AI failed for @${r.username}: ${r.error}`, 'error');
         } else if (r.status === 'send_failed') {
           logAutopilot(`DM send failed for @${r.username}: ${r.error || 'Unknown error'}`, 'error');
+        } else if (r.status === 'skipped') {
+          logAutopilot(`Skipped @${r.username}: ${r.reason || 'spam guard'}`, 'info');
         }
       }
 
