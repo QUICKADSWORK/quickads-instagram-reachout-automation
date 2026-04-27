@@ -89,7 +89,33 @@
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  // ─── Form Submit ────────────────────────────────────────
+  async function runScraperJob(runId, datasetId, { startProgress = 15, label = 'Scraper is running…' } = {}) {
+    let progress = startProgress;
+    progressFill.style.width = progress + '%';
+
+    while (true) {
+      await sleep(4000);
+      const statusRes = await fetch(`/api/status/${runId}`);
+      const statusData = await statusRes.json();
+
+      if (statusData.status === 'SUCCEEDED') {
+        progressFill.style.width = '90%';
+        setStatus('Scraping complete!', 'Fetching results…');
+        break;
+      } else if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(statusData.status)) {
+        throw new Error(`Scraper ${statusData.status.toLowerCase()}: ${statusData.statusMessage || 'Unknown error.'}`);
+      } else {
+        progress = Math.min(progress + 3, 85);
+        progressFill.style.width = progress + '%';
+        setStatus(label, statusData.statusMessage || 'Analyzing profiles…');
+      }
+    }
+
+    const resultsRes = await fetch(`/api/results/${datasetId}`);
+    const items = await resultsRes.json();
+    return Array.isArray(items) ? items : [];
+  }
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     errorCard.style.display = 'none';
@@ -100,12 +126,13 @@
     const seedAccounts = seedRaw.split(',').map(s => s.trim().replace('@', '')).filter(Boolean);
     if (seedAccounts.length === 0) { showError('Please enter valid seed accounts.'); return; }
 
-    const payload = {
-      seedAccounts,
-      minFollowers: $('#minFollowers').value || undefined,
-      maxFollowers: $('#maxFollowers').value || undefined,
-      maxProfiles: parseInt($('#maxProfiles').value) || 100,
-    };
+    const niche = $('#nicheKeywords') ? $('#nicheKeywords').value.trim() : '';
+    const location = $('#location') ? $('#location').value : '';
+    const minFollowers = $('#minFollowers').value || undefined;
+    const maxFollowers = $('#maxFollowers').value || undefined;
+    const maxProfiles = parseInt($('#maxProfiles').value) || 100;
+
+    const payload = { seedAccounts, niche, location, minFollowers, maxFollowers, maxProfiles };
 
     searchBtn.disabled = true;
     searchBtn.innerHTML = `<span class="spinner" style="width:18px;height:18px;border-width:2px;"></span> Searching…`;
@@ -123,35 +150,70 @@
       const startData = await startRes.json();
       if (!startRes.ok) throw new Error(startData.error || 'Failed to start scraping.');
 
-      const { runId, datasetId } = startData;
       progressFill.style.width = '15%';
-      setStatus('Scraper is running…', 'Discovering and analyzing Instagram profiles. This may take 5–15 minutes.');
+      setStatus('Scraper is running…', 'Network expansion: discovering similar profiles to your seeds. This may take 5–15 minutes.');
 
-      let done = false;
-      let progress = 15;
-      while (!done) {
-        await sleep(4000);
-        const statusRes = await fetch(`/api/status/${runId}`);
-        const statusData = await statusRes.json();
+      let items = await runScraperJob(startData.runId, startData.datasetId, {
+        startProgress: 15,
+        label: 'Scraper is running… (network expansion)',
+      });
 
-        if (statusData.status === 'SUCCEEDED') {
-          done = true;
-          progressFill.style.width = '90%';
-          setStatus('Scraping complete!', 'Fetching results…');
-        } else if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(statusData.status)) {
-          throw new Error(`Scraper ${statusData.status.toLowerCase()}: ${statusData.statusMessage || 'Unknown error.'}`);
-        } else {
-          progress = Math.min(progress + 3, 85);
-          progressFill.style.width = progress + '%';
-          setStatus('Scraper is running…', statusData.statusMessage || 'Analyzing profiles…');
+      // ── Fallback 1: try keyword/hashtag discovery if first pass empty ──
+      if (items.length === 0) {
+        const niches = niche
+          ? niche.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+          : [];
+        if (niches.length || seedAccounts.length) {
+          setStatus('No matches via network expansion — retrying…', 'Falling back to keyword + hashtag discovery using your niche.');
+          progressFill.style.width = '20%';
+
+          const fbRes = await fetch('/api/scrape/fallback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              niches,
+              seedAccounts,
+              location,
+              minFollowers,
+              maxFollowers,
+              maxProfiles,
+            }),
+          });
+          const fbData = await fbRes.json();
+          if (!fbRes.ok) throw new Error(fbData.error || 'Fallback discovery failed.');
+
+          items = await runScraperJob(fbData.runId, fbData.datasetId, {
+            startProgress: 25,
+            label: 'Scraper is running… (keyword discovery)',
+          });
         }
       }
 
-      const resultsRes = await fetch(`/api/results/${datasetId}`);
-      const items = await resultsRes.json();
+      // ── Fallback 2: if STILL empty, retry once with widened follower range ──
+      if (items.length === 0 && (minFollowers || maxFollowers)) {
+        setStatus('Still nothing — widening follower range…', 'Removing min/max follower filters for one more attempt.');
+        progressFill.style.width = '30%';
 
-      if (!Array.isArray(items) || items.length === 0) {
-        throw new Error('No profiles found. Try different seed accounts or broaden your filters.');
+        const widenedRes = await fetch('/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seedAccounts, niche, location, maxProfiles }),
+        });
+        const widenedData = await widenedRes.json();
+        if (widenedRes.ok) {
+          items = await runScraperJob(widenedData.runId, widenedData.datasetId, {
+            startProgress: 30,
+            label: 'Scraper is running… (widened filters)',
+          });
+        }
+      }
+
+      if (!items.length) {
+        throw new Error(
+          'No profiles found after 3 attempts (network expansion → keyword discovery → widened range). ' +
+          'Try: (1) 3-5 seed accounts instead of one, (2) a wider follower range like 1K–500K, ' +
+          '(3) more specific niche keywords, or (4) clear the location filter.'
+        );
       }
 
       progressFill.style.width = '100%';

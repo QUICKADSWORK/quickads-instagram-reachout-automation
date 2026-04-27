@@ -118,59 +118,212 @@ function findDuplicateYouMessage(messages, candidate) {
 //  Existing Scraper Routes
 // ═══════════════════════════════════════════════════════════
 
+const SCRAPER_ACTOR_ID = 'afanasenko~instagram-profile-scraper';
+
+const LOCATION_TO_LANGUAGE = {
+  US: 'English', UK: 'English', CA: 'English', AU: 'English',
+  IN: 'English', SG: 'English', AE: 'English',
+  DE: 'German', FR: 'French', BR: 'Portuguese', ES: 'Spanish',
+};
+
+function parseKeywordList(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(/[,;\n]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+// Scrub characters that aren't valid in Instagram hashtags
+function toHashtag(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '')
+    .slice(0, 30);
+}
+
+function buildNetworkExpansionInput({ seedAccounts, niches, location, minFollowers, maxFollowers, maxProfiles }) {
+  const input = {
+    operationMode: 'networkExpansion',
+    startUsernames: seedAccounts,
+    maxProfilesToAnalyze: Number(maxProfiles) || 100,
+    searchDepth: 1,
+    extractEmail: true,
+    extractPhoneNumber: true,
+    extractWebsiteUrl: true,
+    extractBusinessCategory: true,
+    analyzeQuality: true,
+  };
+  if (minFollowers) input.minFollowers = Number(minFollowers);
+  if (maxFollowers) input.maxFollowers = Number(maxFollowers);
+  if (niches && niches.length) {
+    input.keywords = niches.join(', ');
+    input.categoryFilter = 'any';
+    input.filterCombination = 'OR';
+  }
+  if (location && LOCATION_TO_LANGUAGE[location]) {
+    input.profileLanguage = LOCATION_TO_LANGUAGE[location];
+  }
+  return input;
+}
+
+function buildKeywordDiscoveryInput({ niches, location, minFollowers, maxFollowers, maxProfiles }) {
+  const queries = niches.slice(0, 5);
+  const hashtags = niches.map(toHashtag).filter(t => t.length >= 3).slice(0, 5);
+  const input = {
+    operationMode: 'keywordDiscovery',
+    searchQueries: queries,
+    searchHashtags: hashtags,
+    maxSearchPagesPerQuery: 5,
+    maxCountDiscovery: Math.max(50, Number(maxProfiles) || 100),
+    categoryFilter: 'any',
+    filterCombination: 'OR',
+    extractEmail: true,
+    extractPhoneNumber: true,
+    extractWebsiteUrl: true,
+    extractBusinessCategory: true,
+    analyzeQuality: true,
+  };
+  if (minFollowers) input.minFollowers = Number(minFollowers);
+  if (maxFollowers) input.maxFollowers = Number(maxFollowers);
+  if (location && LOCATION_TO_LANGUAGE[location]) {
+    input.profileLanguage = LOCATION_TO_LANGUAGE[location];
+  }
+  return input;
+}
+
+async function startApifyRun(actorInput) {
+  const startRes = await fetch(
+    `https://api.apify.com/v2/acts/${SCRAPER_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(actorInput),
+    }
+  );
+  if (!startRes.ok) {
+    const errBody = await startRes.text();
+    const err = new Error(`Apify error (${startRes.status}): ${errBody.slice(0, 400)}`);
+    err.status = startRes.status;
+    throw err;
+  }
+  return startRes.json();
+}
+
+async function fetchRunStatus(runId) {
+  const statusRes = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`);
+  if (!statusRes.ok) throw new Error('Failed to fetch run status.');
+  return statusRes.json();
+}
+
+async function fetchDatasetItems(datasetId) {
+  const resultsRes = await fetch(
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}&format=json&clean=true`
+  );
+  if (!resultsRes.ok) throw new Error('Failed to fetch results.');
+  return resultsRes.json();
+}
+
+async function waitForRunCompletion(runId, { onTick } = {}) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 4000));
+    const data = await fetchRunStatus(runId);
+    const status = data.data?.status;
+    if (onTick) onTick(data.data);
+    if (status === 'SUCCEEDED') return data.data;
+    if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
+      const err = new Error(`Scraper ${status.toLowerCase()}: ${data.data?.statusMessage || 'Unknown error.'}`);
+      err.status = status;
+      throw err;
+    }
+  }
+}
+
 app.post('/api/scrape', async (req, res) => {
   try {
-    const { seedAccounts, minFollowers, maxFollowers, maxProfiles } = req.body;
+    const { seedAccounts, minFollowers, maxFollowers, maxProfiles, niche, location } = req.body;
 
     if (!seedAccounts || seedAccounts.length === 0) {
       return res.status(400).json({ error: 'At least one seed account is required.' });
     }
 
-    const actorInput = {
-      operationMode: 'networkExpansion',
-      startUsernames: seedAccounts.map(s => s.trim()).filter(Boolean),
-      maxProfilesToAnalyze: Number(maxProfiles) || 100,
-      searchDepth: '1',
-      extractEmail: true,
-      analyzeQuality: true,
-    };
-
-    if (minFollowers) actorInput.minFollowers = Number(minFollowers);
-    if (maxFollowers) actorInput.maxFollowers = Number(maxFollowers);
-
-    const actorId = 'afanasenko~instagram-profile-scraper';
-    const startUrl = `https://api.apify.com/v2/acts/${actorId}/runs?token=${APIFY_TOKEN}`;
-
-    const startRes = await fetch(startUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(actorInput),
-    });
-
-    if (!startRes.ok) {
-      const errBody = await startRes.text();
-      return res.status(startRes.status).json({ error: `Apify error: ${errBody}` });
+    const cleanSeeds = seedAccounts
+      .map(s => String(s || '').trim().replace(/^@/, '').replace(/\/$/, ''))
+      .filter(Boolean);
+    if (!cleanSeeds.length) {
+      return res.status(400).json({ error: 'Seed accounts list was empty after cleanup.' });
     }
 
-    const runData = await startRes.json();
+    const niches = parseKeywordList(niche);
+    const actorInput = buildNetworkExpansionInput({
+      seedAccounts: cleanSeeds,
+      niches,
+      location,
+      minFollowers,
+      maxFollowers,
+      maxProfiles,
+    });
+
+    const runData = await startApifyRun(actorInput);
     return res.json({
       runId: runData.data?.id,
       datasetId: runData.data?.defaultDatasetId,
       status: runData.data?.status,
+      mode: 'networkExpansion',
+      // Echo back so the client can pass them to the fallback if needed
+      params: { seedAccounts: cleanSeeds, niches, location, minFollowers, maxFollowers, maxProfiles },
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('scrape start error:', err);
+    return res.status(err.status && Number.isInteger(err.status) ? err.status : 500).json({ error: err.message });
+  }
+});
+
+// Fallback: keyword/hashtag discovery when network expansion returned nothing.
+// Frontend calls this automatically after a 0-result first pass.
+app.post('/api/scrape/fallback', async (req, res) => {
+  try {
+    const { niches, location, minFollowers, maxFollowers, maxProfiles, seedAccounts } = req.body || {};
+
+    let keywords = parseKeywordList(Array.isArray(niches) ? niches.join(',') : niches);
+    // If user gave no niche keywords, fall back to using the seed handles themselves
+    if (!keywords.length && Array.isArray(seedAccounts)) {
+      keywords = seedAccounts
+        .map(s => String(s || '').replace(/[._\-0-9@]/g, ' ').trim())
+        .flatMap(s => s.split(/\s+/))
+        .filter(w => w.length >= 3)
+        .slice(0, 5);
+    }
+    if (!keywords.length) {
+      return res.status(400).json({ error: 'No niche keywords or usable seed handles to run keyword discovery.' });
+    }
+
+    const actorInput = buildKeywordDiscoveryInput({
+      niches: keywords,
+      location,
+      minFollowers,
+      maxFollowers,
+      maxProfiles,
+    });
+
+    const runData = await startApifyRun(actorInput);
+    return res.json({
+      runId: runData.data?.id,
+      datasetId: runData.data?.defaultDatasetId,
+      status: runData.data?.status,
+      mode: 'keywordDiscovery',
+      keywords,
+    });
+  } catch (err) {
+    console.error('scrape fallback error:', err);
+    return res.status(err.status && Number.isInteger(err.status) ? err.status : 500).json({ error: err.message });
   }
 });
 
 app.get('/api/status/:runId', async (req, res) => {
   try {
-    const { runId } = req.params;
-    const statusRes = await fetch(
-      `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`
-    );
-    if (!statusRes.ok) return res.status(statusRes.status).json({ error: 'Failed to fetch run status.' });
-    const data = await statusRes.json();
+    const data = await fetchRunStatus(req.params.runId);
     return res.json({
       status: data.data?.status,
       statusMessage: data.data?.statusMessage,
@@ -183,12 +336,8 @@ app.get('/api/status/:runId', async (req, res) => {
 
 app.get('/api/results/:datasetId', async (req, res) => {
   try {
-    const { datasetId } = req.params;
-    const resultsRes = await fetch(
-      `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}&format=json&clean=true`
-    );
-    if (!resultsRes.ok) return res.status(resultsRes.status).json({ error: 'Failed to fetch results.' });
-    return res.json(await resultsRes.json());
+    const items = await fetchDatasetItems(req.params.datasetId);
+    return res.json(items);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
