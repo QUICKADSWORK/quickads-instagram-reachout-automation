@@ -143,33 +143,28 @@ function toHashtag(s) {
     .slice(0, 30);
 }
 
-function buildNetworkExpansionInput({ seedAccounts, niches, location, minFollowers, maxFollowers, maxProfiles }) {
+// IMPORTANT: keep this input MINIMAL — exactly the original shape that was
+// working before. Every extra filter (keywords, category, language, etc.)
+// tightens results and is the reason searches were returning 0.
+// Niche + location are NOT applied here on purpose — they're used in the
+// keyword-discovery fallback where they belong.
+function buildNetworkExpansionInput({ seedAccounts, minFollowers, maxFollowers, maxProfiles }) {
   const input = {
     operationMode: 'networkExpansion',
     startUsernames: seedAccounts,
     maxProfilesToAnalyze: Number(maxProfiles) || 100,
-    // Actor expects this as a string, not a number — actor build is strict
     searchDepth: '1',
     extractEmail: true,
-    extractPhoneNumber: true,
-    extractWebsiteUrl: true,
-    extractBusinessCategory: true,
     analyzeQuality: true,
   };
   if (minFollowers) input.minFollowers = Number(minFollowers);
   if (maxFollowers) input.maxFollowers = Number(maxFollowers);
-  if (niches && niches.length) {
-    input.keywords = niches;
-    input.categoryFilter = 'any';
-    input.filterCombination = 'OR';
-  }
-  if (location && LOCATION_TO_LANGUAGE[location]) {
-    input.profileLanguage = LOCATION_TO_LANGUAGE[location];
-  }
   return input;
 }
 
-function buildKeywordDiscoveryInput({ niches, location, minFollowers, maxFollowers, maxProfiles }) {
+// Fallback discovery: only fires after network expansion returns 0.
+// Keep this LIGHT too — same lesson as above.
+function buildKeywordDiscoveryInput({ niches, minFollowers, maxFollowers, maxProfiles }) {
   const queries = niches.slice(0, 5);
   const hashtags = niches.map(toHashtag).filter(t => t.length >= 3).slice(0, 5);
   const input = {
@@ -178,19 +173,11 @@ function buildKeywordDiscoveryInput({ niches, location, minFollowers, maxFollowe
     searchHashtags: hashtags,
     maxSearchPagesPerQuery: 5,
     maxCountDiscovery: Math.max(50, Number(maxProfiles) || 100),
-    categoryFilter: 'any',
-    filterCombination: 'OR',
     extractEmail: true,
-    extractPhoneNumber: true,
-    extractWebsiteUrl: true,
-    extractBusinessCategory: true,
     analyzeQuality: true,
   };
   if (minFollowers) input.minFollowers = Number(minFollowers);
   if (maxFollowers) input.maxFollowers = Number(maxFollowers);
-  if (location && LOCATION_TO_LANGUAGE[location]) {
-    input.profileLanguage = LOCATION_TO_LANGUAGE[location];
-  }
   return input;
 }
 
@@ -257,10 +244,12 @@ app.post('/api/scrape', async (req, res) => {
     }
 
     const niches = parseKeywordList(niche);
+
+    // Network expansion is intentionally minimal — extra filters here have
+    // historically caused 0-result runs. Niche/location are reserved for the
+    // keyword-discovery fallback if this comes back empty.
     const actorInput = buildNetworkExpansionInput({
       seedAccounts: cleanSeeds,
-      niches,
-      location,
       minFollowers,
       maxFollowers,
       maxProfiles,
@@ -272,7 +261,6 @@ app.post('/api/scrape', async (req, res) => {
       datasetId: runData.data?.defaultDatasetId,
       status: runData.data?.status,
       mode: 'networkExpansion',
-      // Echo back so the client can pass them to the fallback if needed
       params: { seedAccounts: cleanSeeds, niches, location, minFollowers, maxFollowers, maxProfiles },
     });
   } catch (err) {
@@ -302,7 +290,6 @@ app.post('/api/scrape/fallback', async (req, res) => {
 
     const actorInput = buildKeywordDiscoveryInput({
       niches: keywords,
-      location,
       minFollowers,
       maxFollowers,
       maxProfiles,
