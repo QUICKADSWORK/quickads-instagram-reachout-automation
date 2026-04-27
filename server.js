@@ -159,7 +159,7 @@ function buildNetworkExpansionInput({ seedAccounts, niches, location, minFollowe
   if (minFollowers) input.minFollowers = Number(minFollowers);
   if (maxFollowers) input.maxFollowers = Number(maxFollowers);
   if (niches && niches.length) {
-    input.keywords = niches.join(', ');
+    input.keywords = niches;
     input.categoryFilter = 'any';
     input.filterCombination = 'OR';
   }
