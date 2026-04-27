@@ -148,7 +148,8 @@ function buildNetworkExpansionInput({ seedAccounts, niches, location, minFollowe
     operationMode: 'networkExpansion',
     startUsernames: seedAccounts,
     maxProfilesToAnalyze: Number(maxProfiles) || 100,
-    searchDepth: 1,
+    // Actor expects this as a string, not a number — actor build is strict
+    searchDepth: '1',
     extractEmail: true,
     extractPhoneNumber: true,
     extractWebsiteUrl: true,
