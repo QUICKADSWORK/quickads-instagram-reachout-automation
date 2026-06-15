@@ -15,5 +15,14 @@ services:
       # folder is ephemeral on the free tier).
       - key: INSTAGRAM_COOKIES
         sync: false
+      # Optional: set a password to lock the whole app behind HTTP Basic
+      # auth. Leave unset to keep the app open (current behavior).
+      - key: APP_PASSWORD
+        sync: false
+      # Optional: absolute path to a persistent disk mount so campaigns,
+      # negotiations and your ready list survive redeploys. Without a
+      # persistent disk these are wiped on every deploy / cold start.
+      - key: DATA_DIR
+        sync: false
       - key: NODE_VERSION
         value: 18.20.8

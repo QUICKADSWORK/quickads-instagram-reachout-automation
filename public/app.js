@@ -263,23 +263,23 @@
         <td>${i + 1}</td>
         <td>
           <div class="profile-cell">
-            <div class="avatar">${initials}</div>
-            <a href="${profileUrl}" target="_blank" rel="noopener">@${username || '—'}</a>
+            <div class="avatar">${esc(initials)}</div>
+            <a href="${esc(profileUrl)}" target="_blank" rel="noopener">@${esc(username) || '—'}</a>
           </div>
         </td>
-        <td>${fullName || '—'}</td>
+        <td>${esc(fullName) || '—'}</td>
         <td>${formatNumber(followers)}</td>
-        <td>${er || '—'}</td>
-        <td><span class="badge ${qualityClass}">${quality || 'N/A'}</span></td>
-        <td>${email || '—'}</td>
-        <td>${category || '—'}</td>
-        <td><div class="bio-cell" title="${(bio || '').replace(/"/g, '&quot;')}">${bio || '—'}</div></td>
+        <td>${esc(er) || '—'}</td>
+        <td><span class="badge ${qualityClass}">${esc(quality) || 'N/A'}</span></td>
+        <td>${esc(email) || '—'}</td>
+        <td>${esc(category) || '—'}</td>
+        <td><div class="bio-cell" title="${esc(bio)}">${esc(bio) || '—'}</div></td>
         <td>
           <button class="${dmBtnClass}"
-            data-username="${username}"
-            data-fullname="${fullName}"
-            data-followers="${formatNumber(followers)}"
-            data-category="${category}"
+            data-username="${esc(username)}"
+            data-fullname="${esc(fullName)}"
+            data-followers="${esc(formatNumber(followers))}"
+            data-category="${esc(category)}"
             onclick="window.__sendDM(this)">
             ${dmBtnLabel}
           </button>
@@ -497,9 +497,12 @@
 
   function esc(s) {
     if (s == null) return '';
-    const d = document.createElement('span');
-    d.textContent = String(s);
-    return d.innerHTML;
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ═══════════════════════════════════════════════════════
