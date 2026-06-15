@@ -494,4 +494,232 @@
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  function esc(s) {
+    if (s == null) return '';
+    const d = document.createElement('span');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  Mode Segments (Ready-to-Go / Discover / Barter)
+  // ═══════════════════════════════════════════════════════
+  const views = {
+    ready: $('#viewReady'),
+    discover: $('#viewDiscover'),
+    barter: $('#viewBarter'),
+  };
+
+  function switchView(view) {
+    Object.entries(views).forEach(([key, el]) => {
+      if (el) el.style.display = key === view ? 'block' : 'none';
+    });
+    $$('.segment-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+    if (view === 'ready') loadReadyInfluencers();
+  }
+
+  $$('.segment-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+
+  // ═══════════════════════════════════════════════════════
+  //  Ready-to-Go Influencers
+  // ═══════════════════════════════════════════════════════
+  let readyList = [];
+
+  async function loadReadyInfluencers() {
+    try {
+      const res = await fetch('/api/ready-influencers');
+      readyList = res.ok ? await res.json() : [];
+    } catch { readyList = []; }
+    renderReady();
+  }
+
+  function renderReady() {
+    const tbody = $('#readyBody');
+    $('#readyCount').textContent = readyList.length;
+
+    if (!readyList.length) {
+      $('#readyEmpty').style.display = 'block';
+      $('#readyTableWrap').style.display = 'none';
+      tbody.innerHTML = '';
+      return;
+    }
+    $('#readyEmpty').style.display = 'none';
+    $('#readyTableWrap').style.display = 'block';
+
+    tbody.innerHTML = readyList.map((inf, i) => {
+      const initials = (inf.fullName || inf.username).slice(0, 2).toUpperCase();
+      const profileUrl = `https://instagram.com/${inf.username}`;
+      const sent = isDMd(inf.username);
+      return `
+        <tr>
+          <td>${i + 1}</td>
+          <td>
+            <div class="profile-cell">
+              <div class="avatar">${esc(initials)}</div>
+              <a href="${profileUrl}" target="_blank" rel="noopener">@${esc(inf.username)}</a>
+            </div>
+          </td>
+          <td>${esc(inf.fullName) || '—'}</td>
+          <td>${formatNumber(inf.followers)}</td>
+          <td>${esc(inf.category) || '—'}</td>
+          <td>${esc(inf.email) || '—'}</td>
+          <td>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button class="${sent ? 'btn-dm dm-sent' : 'btn-dm'}" data-ready-dm="${esc(inf.username)}">${sent ? '&#10003; DM Sent' : '&#128172; Send DM'}</button>
+              <button class="btn-delete-row" data-ready-del="${esc(inf.username)}" title="Remove">&times;</button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('[data-ready-dm]').forEach(b => {
+      b.addEventListener('click', () => sendReadyDM(b.dataset.readyDm, b));
+    });
+    tbody.querySelectorAll('[data-ready-del]').forEach(b => {
+      b.addEventListener('click', () => deleteReady(b.dataset.readyDel));
+    });
+  }
+
+  async function addReady(payload) {
+    const res = await fetch('/api/ready-influencers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error || 'Failed to add'); return null; }
+    readyList = data.influencers;
+    renderReady();
+    return data;
+  }
+
+  const btnAddReady = $('#btnAddReady');
+  if (btnAddReady) {
+    btnAddReady.addEventListener('click', async () => {
+      const username = $('#rUsername').value.trim();
+      if (!username) { showToast('Enter a username'); return; }
+      const data = await addReady({
+        username,
+        fullName: $('#rFullName').value.trim(),
+        followers: $('#rFollowers').value,
+        category: $('#rCategory').value.trim(),
+        email: $('#rEmail').value.trim(),
+      });
+      if (data) {
+        ['rUsername', 'rFullName', 'rFollowers', 'rCategory', 'rEmail'].forEach(id => { $('#' + id).value = ''; });
+        showToast('Added to ready list');
+      }
+    });
+  }
+
+  const btnBulkAddReady = $('#btnBulkAddReady');
+  if (btnBulkAddReady) {
+    btnBulkAddReady.addEventListener('click', async () => {
+      const raw = $('#rBulk').value.trim();
+      if (!raw) { showToast('Paste a list first'); return; }
+      const influencers = raw.split('\n').map(line => {
+        const parts = line.split(',').map(s => s.trim());
+        if (!parts[0]) return null;
+        return {
+          username: parts[0].replace('@', ''),
+          fullName: parts[1] || '',
+          followers: parts[2] || 0,
+          category: parts[3] || '',
+          email: parts[4] || '',
+        };
+      }).filter(Boolean);
+      if (!influencers.length) { showToast('No valid rows found'); return; }
+      const data = await addReady({ influencers });
+      if (data) {
+        $('#rBulk').value = '';
+        showToast(`Added ${data.added}, updated ${data.updated}`);
+      }
+    });
+  }
+
+  async function deleteReady(username) {
+    if (!confirm(`Remove @${username} from your ready list?`)) return;
+    const res = await fetch(`/api/ready-influencers/${encodeURIComponent(username)}`, { method: 'DELETE' });
+    if (res.ok) {
+      readyList = readyList.filter(i => i.username.toLowerCase() !== username.toLowerCase());
+      renderReady();
+      showToast('Removed');
+    }
+  }
+
+  function readyPersonalize(inf) {
+    return personalizeMessage($('#readyDmTemplate').value, {
+      name: inf.fullName || inf.username,
+      username: inf.username,
+      followers: formatNumber(inf.followers),
+      category: inf.category,
+    });
+  }
+
+  async function sendReadyDM(username, btn) {
+    const inf = readyList.find(i => i.username.toLowerCase() === username.toLowerCase());
+    if (!inf) return;
+    const msg = readyPersonalize(inf);
+    try {
+      await navigator.clipboard.writeText(msg);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = msg;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    window.open(`https://ig.me/m/${username}`, '_blank');
+    markAsDMd(username);
+    if (btn) { btn.classList.add('dm-sent'); btn.innerHTML = '&#10003; DM Sent'; }
+    showToast('Message copied — paste & send in the DM tab');
+  }
+
+  $$('.ready-tag').forEach(tag => {
+    tag.addEventListener('click', () => {
+      const ta = $('#readyDmTemplate');
+      const ph = tag.dataset.placeholder;
+      const s = ta.selectionStart, e = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + ph + ta.value.slice(e);
+      ta.focus();
+      ta.setSelectionRange(s + ph.length, s + ph.length);
+    });
+  });
+
+  const btnReadyDmAll = $('#btnReadyDmAll');
+  if (btnReadyDmAll) {
+    btnReadyDmAll.addEventListener('click', async () => {
+      const uncontacted = readyList.filter(i => !isDMd(i.username));
+      if (!uncontacted.length) { showToast('All saved influencers contacted!'); return; }
+      if (!confirm(`This opens ${uncontacted.length} DM tabs (2s apart). Continue?`)) return;
+      for (let i = 0; i < uncontacted.length; i++) {
+        const inf = uncontacted[i];
+        const msg = readyPersonalize(inf);
+        try { await navigator.clipboard.writeText(msg); } catch {}
+        window.open(`https://ig.me/m/${inf.username}`, '_blank');
+        markAsDMd(inf.username);
+        showToast(`Opened ${i + 1}/${uncontacted.length}: @${inf.username}`);
+        if (i < uncontacted.length - 1) await sleep(2000);
+      }
+      renderReady();
+    });
+  }
+
+  const btnReadyCSV = $('#btnReadyCSV');
+  if (btnReadyCSV) {
+    btnReadyCSV.addEventListener('click', () => {
+      if (!readyList.length) return;
+      const headers = ['Username', 'Full Name', 'Followers', 'Category', 'Email'];
+      let csv = headers.map(h => `"${h}"`).join(',') + '\n';
+      csv += readyList.map(i =>
+        [i.username, i.fullName, i.followers, i.category, i.email]
+          .map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(',')
+      ).join('\n');
+      downloadBlob(csv, 'ready-influencers.csv', 'text/csv');
+    });
+  }
 })();
