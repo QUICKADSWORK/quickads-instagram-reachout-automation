@@ -350,6 +350,82 @@ app.post('/api/export/excel', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  Ready-to-Go Influencer Roster
+//  A saved list of known-good creators you can DM instantly,
+//  no scraping needed. Persisted to ready_influencers.json.
+// ═══════════════════════════════════════════════════════════
+
+function normalizeReadyInfluencer(raw) {
+  if (!raw) return null;
+  const username = String(raw.username || raw.handle || '')
+    .trim().replace(/^@/, '').replace(/\/$/, '')
+    .replace('https://instagram.com/', '').replace('https://www.instagram.com/', '');
+  if (!username) return null;
+  return {
+    username,
+    fullName: String(raw.fullName || raw.name || '').trim(),
+    followers: Number(raw.followers) || 0,
+    category: String(raw.category || '').trim(),
+    email: String(raw.email || '').trim(),
+    notes: String(raw.notes || '').trim(),
+    addedAt: raw.addedAt || new Date().toISOString(),
+  };
+}
+
+app.get('/api/ready-influencers', (req, res) => {
+  res.json(readDB('ready_influencers.json'));
+});
+
+app.post('/api/ready-influencers', (req, res) => {
+  const incoming = Array.isArray(req.body?.influencers)
+    ? req.body.influencers
+    : (req.body?.username ? [req.body] : []);
+
+  const cleaned = incoming.map(normalizeReadyInfluencer).filter(Boolean);
+  if (!cleaned.length) {
+    return res.status(400).json({ error: 'At least one valid username is required.' });
+  }
+
+  const existing = readDB('ready_influencers.json');
+  const byName = new Map(existing.map(i => [i.username.toLowerCase(), i]));
+  let added = 0;
+  let updated = 0;
+
+  for (const inf of cleaned) {
+    const key = inf.username.toLowerCase();
+    if (byName.has(key)) {
+      // Merge: fill blanks, keep original addedAt
+      const prev = byName.get(key);
+      byName.set(key, {
+        ...prev,
+        fullName: inf.fullName || prev.fullName,
+        followers: inf.followers || prev.followers,
+        category: inf.category || prev.category,
+        email: inf.email || prev.email,
+        notes: inf.notes || prev.notes,
+      });
+      updated++;
+    } else {
+      byName.set(key, inf);
+      added++;
+    }
+  }
+
+  const all = Array.from(byName.values());
+  writeDB('ready_influencers.json', all);
+  res.json({ ok: true, added, updated, total: all.length, influencers: all });
+});
+
+app.delete('/api/ready-influencers/:username', (req, res) => {
+  const uname = String(req.params.username || '').toLowerCase().replace(/^@/, '');
+  let all = readDB('ready_influencers.json');
+  const before = all.length;
+  all = all.filter(i => i.username.toLowerCase() !== uname);
+  writeDB('ready_influencers.json', all);
+  res.json({ ok: true, removed: before - all.length, total: all.length });
+});
+
+// ═══════════════════════════════════════════════════════════
 //  Campaign Routes
 // ═══════════════════════════════════════════════════════════
 

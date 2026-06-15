@@ -35,10 +35,157 @@
 
     <!-- ─── Hero ────────────────────────────────────────── -->
     <section class="hero">
-      <div class="hero-badge">Instagram Influencer Discovery</div>
-      <h1>Discover the perfect <span class="gradient-text">creators</span> for your brand</h1>
-      <p class="hero-sub">Enter seed accounts from your niche. Our AI-powered scraper analyzes their network to find similar influencers with verified engagement metrics.</p>
+      <div class="hero-badge">Instagram Influencer Outreach</div>
+      <h1>Find & close the perfect <span class="gradient-text">creators</span> for your brand</h1>
+      <p class="hero-sub">Pick how you want to start — work from your ready list, discover new creators, or set up a barter collab.</p>
     </section>
+
+    <!-- ─── Mode Segments ───────────────────────────────── -->
+    <section class="segment-control" id="segmentControl">
+      <button class="segment-btn" data-view="ready">
+        <span class="segment-icon">⚡</span>
+        <span class="segment-text">
+          <span class="segment-title">Ready-to-Go Influencers</span>
+          <span class="segment-sub">Your saved list — DM instantly</span>
+        </span>
+      </button>
+      <button class="segment-btn active" data-view="discover">
+        <span class="segment-icon">🔍</span>
+        <span class="segment-text">
+          <span class="segment-title">Discover &amp; Close</span>
+          <span class="segment-sub">Scrape similar creators by niche</span>
+        </span>
+      </button>
+      <button class="segment-btn" data-view="barter">
+        <span class="segment-icon">🤝</span>
+        <span class="segment-text">
+          <span class="segment-title">Barter Collab</span>
+          <span class="segment-sub">Coming soon</span>
+        </span>
+      </button>
+    </section>
+
+    <!-- ═══ VIEW: Ready-to-Go Influencers ═══════════════════ -->
+    <div id="viewReady" class="mode-view" style="display:none;">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-icon">⚡</div>
+          <div>
+            <h2>Ready-to-Go Influencers</h2>
+            <p class="card-subtitle">Build a saved roster of creators you can DM instantly — no scraping</p>
+          </div>
+        </div>
+
+        <div class="form-row" style="grid-template-columns: 1.2fr 1.2fr 0.8fr 1fr 1.2fr auto; align-items:end; gap:12px;">
+          <div class="form-group">
+            <label for="rUsername">Username *</label>
+            <input type="text" id="rUsername" placeholder="username" />
+          </div>
+          <div class="form-group">
+            <label for="rFullName">Full Name</label>
+            <input type="text" id="rFullName" placeholder="Full name" />
+          </div>
+          <div class="form-group">
+            <label for="rFollowers">Followers</label>
+            <input type="number" id="rFollowers" placeholder="50000" />
+          </div>
+          <div class="form-group">
+            <label for="rCategory">Category</label>
+            <input type="text" id="rCategory" placeholder="Fitness" />
+          </div>
+          <div class="form-group">
+            <label for="rEmail">Email</label>
+            <input type="text" id="rEmail" placeholder="name@email.com" />
+          </div>
+          <div class="form-group">
+            <label>&nbsp;</label>
+            <button id="btnAddReady" class="btn btn-primary" style="white-space:nowrap;">+ Add</button>
+          </div>
+        </div>
+
+        <details class="bulk-add">
+          <summary>Bulk add (paste a list)</summary>
+          <p class="form-hint" style="margin:8px 0;">One per line: <code>username</code> or <code>username, Full Name, followers, category, email</code></p>
+          <textarea id="rBulk" rows="5" placeholder="aryan_fitness, Aryan Sharma, 48000, Fitness, aryan@mail.com&#10;priya.yoga, Priya Kapoor&#10;rohit_travels"></textarea>
+          <button id="btnBulkAddReady" class="btn btn-outline" style="margin-top:10px;">Add All</button>
+        </details>
+      </section>
+
+      <!-- Shared DM template for the ready list -->
+      <section class="card dm-card open" id="readyDmPanel">
+        <div class="card-header">
+          <div class="card-icon purple">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+          </div>
+          <div>
+            <h2>DM Template</h2>
+            <p class="card-subtitle">Personalized & copied to clipboard before each DM opens</p>
+          </div>
+        </div>
+        <div class="dm-body" style="display:block;">
+          <textarea id="readyDmTemplate" rows="4">Hey {name}! Love your content 🙌 We're working on a campaign with {category} creators and think you'd be a great fit. Open to a quick chat about a paid collab?</textarea>
+          <div class="dm-tags">
+            <button type="button" class="dm-tag ready-tag" data-placeholder="{name}">+ {name}</button>
+            <button type="button" class="dm-tag ready-tag" data-placeholder="{username}">+ {username}</button>
+            <button type="button" class="dm-tag ready-tag" data-placeholder="{followers}">+ {followers}</button>
+            <button type="button" class="dm-tag ready-tag" data-placeholder="{category}">+ {category}</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="results-header">
+          <div class="results-title">
+            <h2><span id="readyCount">0</span> Saved Influencers</h2>
+            <p class="card-subtitle">DM them directly or export the list</p>
+          </div>
+          <div class="results-actions">
+            <button id="btnReadyDmAll" class="btn btn-outline btn-dm-all" title="DM all">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+              DM All
+            </button>
+            <button id="btnReadyCSV" class="btn btn-outline" title="Export CSV">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              CSV
+            </button>
+          </div>
+        </div>
+        <div id="readyEmpty" class="empty-state" style="display:none; padding:48px 24px;">
+          <p>No saved influencers yet. Add creators above to build your ready-to-go list.</p>
+        </div>
+        <div class="table-wrapper" id="readyTableWrap" style="display:none;">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Profile</th>
+                <th>Full Name</th>
+                <th>Followers</th>
+                <th>Category</th>
+                <th>Email</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="readyBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ═══ VIEW: Barter Collab ═════════════════════════════ -->
+    <div id="viewBarter" class="mode-view" style="display:none;">
+      <section class="card" style="text-align:center; padding:64px 24px;">
+        <div style="font-size:48px; margin-bottom:16px;">🤝</div>
+        <h2 style="font-size:22px; margin-bottom:10px;">Barter Collab — Coming Soon</h2>
+        <p class="card-subtitle" style="max-width:480px; margin:0 auto; font-size:14px;">
+          Product-for-content collaborations are on the way. Soon you'll be able to set up barter deals,
+          track shipped products, and manage deliverables — all in one place.
+        </p>
+      </section>
+    </div>
+
+    <!-- ═══ VIEW: Discover & Close ══════════════════════════ -->
+    <div id="viewDiscover" class="mode-view">
 
     <!-- ─── Search Form Card ────────────────────────────── -->
     <section class="card search-card">
@@ -208,6 +355,8 @@ Looking forward to hearing from you!</textarea>
         </table>
       </div>
     </section>
+
+    </div><!-- /viewDiscover -->
 
     <!-- ─── Error Card ──────────────────────────────────── -->
     <div id="errorCard" class="error-card" style="display:none;">

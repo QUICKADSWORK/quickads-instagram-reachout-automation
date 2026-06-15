@@ -769,9 +769,109 @@ textarea#dmTemplate {
   font-size: 13px;
 }
 
+/* ─── Mode Segment Control ────────────────────────────── */
+
+.segment-control {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.segment-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 16px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text);
+  transition: all var(--transition);
+}
+
+.segment-btn:hover {
+  border-color: var(--accent);
+  background: var(--bg-card-hover);
+}
+
+.segment-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.segment-icon {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.segment-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.segment-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.segment-btn.active .segment-title {
+  color: var(--accent);
+}
+
+.segment-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.bulk-add {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.bulk-add summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.bulk-add summary:hover {
+  color: var(--accent);
+}
+
+.btn-delete-row {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  transition: all var(--transition);
+}
+
+.btn-delete-row:hover {
+  color: var(--red);
+  background: rgba(239, 68, 68, 0.1);
+}
+
 /* ─── Responsive ──────────────────────────────────────── */
 
 @media (max-width: 768px) {
+  .segment-control {
+    grid-template-columns: 1fr;
+  }
+
   .form-row {
     grid-template-columns: 1fr;
   }
