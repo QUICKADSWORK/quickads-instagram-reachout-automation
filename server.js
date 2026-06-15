@@ -11,25 +11,79 @@ const PORT = process.env.PORT || 3000;
 const APIFY_TOKEN = process.env.APIFY_TOKEN || '';
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || '';
 
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+// DATA_DIR is configurable so it can point at a persistent disk mount
+// (e.g. a Render Disk) — the default ./data folder is ephemeral on most
+// PaaS free tiers and gets wiped on every redeploy / cold start.
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+try {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (err) {
+  console.error('Could not create DATA_DIR:', DATA_DIR, err.message);
+}
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Optional password gate. OFF by default (no behavior change). If you set
+// the APP_PASSWORD env var, the whole app (UI + API) requires HTTP Basic
+// auth with that password. Strongly recommended before exposing a
+// deployment publicly, since whoever can reach this app can send DMs from
+// the configured Instagram account.
+const APP_PASSWORD = process.env.APP_PASSWORD || '';
+if (APP_PASSWORD) {
+  app.use((req, res, next) => {
+    const hdr = req.headers.authorization || '';
+    const [scheme, encoded] = hdr.split(' ');
+    if (scheme === 'Basic' && encoded) {
+      const decoded = Buffer.from(encoded, 'base64').toString();
+      const pass = decoded.slice(decoded.indexOf(':') + 1);
+      if (pass === APP_PASSWORD) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="QuickAds"');
+    return res.status(401).send('Authentication required.');
+  });
+}
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ═══════════════════════════════════════════════════════════
-//  Simple JSON file database
+//  Simple JSON file database (crash-resilient + atomic writes)
 // ═══════════════════════════════════════════════════════════
 
-function readDB(file) {
+// Resilient read: never throws. A missing, empty, whitespace-only, or
+// corrupt file returns the fallback ([]) instead of 500-ing the whole
+// endpoint forever. A corrupt file is backed up once for forensics.
+function readDB(file, fallback = []) {
   const p = path.join(DATA_DIR, file);
-  if (!fs.existsSync(p)) fs.writeFileSync(p, '[]');
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
+  try {
+    if (!fs.existsSync(p)) return fallback;
+    const raw = fs.readFileSync(p, 'utf8');
+    if (!raw || !raw.trim()) return fallback;
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`readDB(${file}) failed: ${err.message}. Returning fallback.`);
+    try {
+      const bad = path.join(DATA_DIR, `${file}.corrupt-${Date.now()}.bak`);
+      fs.copyFileSync(p, bad);
+      console.error(`Backed up corrupt ${file} -> ${path.basename(bad)}`);
+    } catch (_) {}
+    return fallback;
+  }
 }
 
+// Atomic write: write to a temp file then rename. A crash or disk-full
+// mid-write leaves the previous good file intact instead of corrupting it.
 function writeDB(file, data) {
-  fs.writeFileSync(path.join(DATA_DIR, file), JSON.stringify(data, null, 2));
+  const p = path.join(DATA_DIR, file);
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    console.error(`writeDB(${file}) failed: ${err.message}`);
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
+    throw err;
+  }
 }
 
 function genId() {
@@ -443,20 +497,30 @@ app.get('/api/campaigns/:id', (req, res) => {
 app.post('/api/campaigns', (req, res) => {
   const { brandName, productName, collabType, brief, budgetMin, budgetMax, currency, totalBudget } = req.body;
 
-  if (!brandName || !budgetMin || !budgetMax) {
+  if (!brandName || !String(brandName).trim() || budgetMin === undefined || budgetMax === undefined) {
     return res.status(400).json({ error: 'Brand name, min budget, and max budget are required.' });
   }
 
+  const min = Number(budgetMin);
+  const max = Number(budgetMax);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max < 0) {
+    return res.status(400).json({ error: 'Min and max budget must be valid non-negative numbers.' });
+  }
+  if (min > max) {
+    return res.status(400).json({ error: 'Min budget cannot be greater than max budget.' });
+  }
+
+  const totalNum = Number(totalBudget);
   const campaign = {
     id: genId(),
-    brandName,
+    brandName: String(brandName).trim(),
     productName: productName || '',
     collabType: collabType || 'Paid Reel',
     brief: brief || '',
-    budgetMin: Number(budgetMin),
-    budgetMax: Number(budgetMax),
+    budgetMin: min,
+    budgetMax: max,
     currency: currency || 'INR',
-    totalBudget: Number(totalBudget) || 0,
+    totalBudget: Number.isFinite(totalNum) && totalNum > 0 ? totalNum : 0,
     totalSpent: 0,
     createdAt: new Date().toISOString(),
   };
