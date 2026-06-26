@@ -90,6 +90,37 @@ function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+// Health/diagnostics: confirms where data is being stored and whether that
+// location is actually writable + persistent. Open /api/health to verify
+// the Render disk is wired up correctly (dataDir should be /var/data and
+// persistent should be true).
+app.get('/api/health', (req, res) => {
+  const usingEnv = !!process.env.DATA_DIR;
+  let writable = false;
+  try {
+    const probe = path.join(DATA_DIR, '.health-probe');
+    fs.writeFileSync(probe, String(Date.now()));
+    fs.unlinkSync(probe);
+    writable = true;
+  } catch (_) {}
+
+  const counts = {};
+  for (const f of ['campaigns.json', 'negotiations.json', 'ready_influencers.json']) {
+    try { counts[f] = readDB(f).length; } catch (_) { counts[f] = 'error'; }
+  }
+
+  res.json({
+    ok: true,
+    dataDir: DATA_DIR,
+    dataDirFromEnv: usingEnv,
+    // Heuristic: a mounted persistent disk lives outside the app folder.
+    persistent: usingEnv && !DATA_DIR.startsWith(__dirname),
+    writable,
+    counts,
+    time: new Date().toISOString(),
+  });
+});
+
 // ═══════════════════════════════════════════════════════════
 //  Anti-spam helpers: prevent duplicate DMs and enforce
 //  at-most 2 consecutive "you" messages per creator.
