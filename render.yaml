@@ -2,7 +2,9 @@ services:
   - type: web
     name: quickads-instagram-reachout
     runtime: node
-    plan: free
+    # Persistent disks require a paid instance type. 'starter' is the lowest
+    # paid tier that supports a disk — change to your actual paid plan.
+    plan: starter
     buildCommand: npm install
     startCommand: node server.js
     envVars:
@@ -19,10 +21,16 @@ services:
       # auth. Leave unset to keep the app open (current behavior).
       - key: APP_PASSWORD
         sync: false
-      # Optional: absolute path to a persistent disk mount so campaigns,
-      # negotiations and your ready list survive redeploys. Without a
-      # persistent disk these are wiped on every deploy / cold start.
+      # Points the app's JSON storage at the persistent disk mounted below
+      # so campaigns, negotiations and the ready list survive redeploys and
+      # restarts. MUST match the disk mountPath.
       - key: DATA_DIR
-        sync: false
+        value: /var/data
       - key: NODE_VERSION
         value: 18.20.8
+    # Persistent disk — without this, the filesystem is wiped on every
+    # deploy/restart (the cause of the disappearing campaigns).
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
