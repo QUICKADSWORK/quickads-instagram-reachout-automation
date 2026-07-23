@@ -29,14 +29,19 @@ DM sending needs your Instagram session cookies (`sessionid`, `ds_user_id`,
    For a one-click install with auto-updates you can also publish it to the
    Chrome Web Store (one-time $5 developer fee) — the same folder is what you'd
    upload.
-2. **Headless login** — Enter your IG username/password; the server logs in via
-   Playwright and captures the session. Only works for accounts **without** 2FA
-   or a login checkpoint. This needs Chromium **and** its system libraries on
-   the server, so the app ships a `Dockerfile` (built on Playwright's official
-   image) and `render.yaml` deploys via that Docker runtime. On plain Node
-   hosts without those libraries, headless login reports `BROWSER_DEPS_MISSING`
-   — use the extension or paste method there.
-3. **Paste cookies manually** — Paste the cookie JSON array (from a cookie
+2. **Log in via Apify** (works on any host) — Enter your IG username/password
+   (+ a 2FA code if asked). The app runs an Apify login actor
+   (`shareze001/instagram-cookies` by default) that logs in on **Apify's**
+   infrastructure with proxies and returns the session cookies — no browser on
+   your server, and far less likely to hit Instagram's datacenter-IP
+   challenges. Uses your Apify credits. Configure via `IG_LOGIN_ACTOR_ID` /
+   `IG_LOGIN_USER_FIELD` / `IG_LOGIN_PASS_FIELD` / `IG_LOGIN_CODE_FIELD`.
+3. **Local headless login** (advanced) — Enter your IG username/password; the
+   server logs in via Playwright/Chromium **locally**. Needs Chromium + system
+   libraries (the shipped `Dockerfile`), and only works for accounts **without**
+   2FA. On hosts lacking those libs it reports `BROWSER_DEPS_MISSING` — use the
+   Apify login or extension instead.
+4. **Paste cookies manually** — Paste the cookie JSON array (from a cookie
    exporter extension) under "Paste cookies manually".
 
 ## How It Works
@@ -117,7 +122,8 @@ Open **http://localhost:3000** in your browser.
 |--------|----------|-------------|
 | GET | `/api/settings/pair` | Mint a one-time pairing code for the extension |
 | POST | `/api/settings/cookies/import` | Extension posts cookies here with the code |
-| POST | `/api/settings/cookies/login` | Headless Playwright login (username/password) |
+| POST | `/api/settings/cookies/apify-login` | Log in via an Apify actor; stores returned cookies |
+| POST | `/api/settings/cookies/login` | Local headless Playwright login (username/password) |
 | GET/POST | `/api/settings/cookies` | Get/save cookies (manual paste) |
 
 ### Campaigns & Negotiations
