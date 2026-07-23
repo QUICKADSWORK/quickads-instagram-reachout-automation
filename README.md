@@ -21,9 +21,14 @@ Discover Instagram influencers, send DMs, and let an AI agent negotiate paid col
 DM sending needs your Instagram session cookies (`sessionid`, `ds_user_id`,
 `csrftoken`). Open **Negotiate → Settings → Connect Instagram** and pick one:
 
-1. **Browser extension (recommended)** — Install the extension in `extension/`
-   (see its README), generate a pairing code in the app, and connect in one
-   click while logged into Instagram. Reads only the 3 required cookies.
+1. **Browser extension (recommended)** — In Settings, click **Download
+   Extension (.zip)** (served by the app from the `extension/` folder), unzip
+   it, and load it unpacked in Chrome/Edge (`chrome://extensions` → Developer
+   mode → Load unpacked). Then generate a pairing code in the app and connect
+   in one click while logged into Instagram. Reads only the 3 required cookies.
+   For a one-click install with auto-updates you can also publish it to the
+   Chrome Web Store (one-time $5 developer fee) — the same folder is what you'd
+   upload.
 2. **Headless login** — Enter your IG username/password; the server logs in via
    Playwright and captures the session. Only works for accounts **without** 2FA
    or a login checkpoint. Requires the optional `playwright` package + a

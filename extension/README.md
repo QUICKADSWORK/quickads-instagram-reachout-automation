@@ -7,12 +7,25 @@ It reads **only** the three cookies the app needs — `sessionid`, `ds_user_id`,
 and `csrftoken` — and sends them to your app over a one-time pairing code.
 Nothing else is read, stored, or transmitted.
 
+## Get it
+
+- **From the app (easiest):** open **Negotiate → Settings → Connect Instagram**
+  and click **Download Extension (.zip)**, then unzip it.
+- **From source:** just use this `extension/` folder directly.
+
 ## Install (load unpacked)
 
 1. Open `chrome://extensions` (or `edge://extensions`).
 2. Turn on **Developer mode** (top-right).
-3. Click **Load unpacked** and select this `extension/` folder.
+3. Click **Load unpacked** and select this folder (the unzipped one, or this
+   `extension/` folder).
 4. Pin the "QuickAds — Instagram Connect" extension for easy access.
+
+## Publishing to a store (optional)
+
+- **Chrome Web Store** — one-time $5 developer registration; upload this
+  folder zipped. Gives users one-click install + auto-updates.
+- **Edge Add-ons** — free registration; same package (Edge is Chromium).
 
 ## Use
 

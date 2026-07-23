@@ -1721,6 +1721,105 @@ app.get('/api/settings/pair', (req, res) => {
   res.json({ code, expiresAt, ttlSeconds: Math.round(PAIR_TTL_MS / 1000) });
 });
 
+// ── Download the browser extension as a .zip ───────────────
+// Packaged on the fly from the extension/ folder so it's always in sync with
+// the code. Zero-dependency, store-mode (uncompressed) ZIP — small enough that
+// no compression is needed and it avoids pulling in an archiver library.
+
+// Standard CRC-32 (used by the ZIP format).
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// Build a store-mode ZIP from [{ name, data:Buffer }].
+function buildZip(files) {
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name, 'utf8');
+    const crc = crc32(f.data);
+    const size = f.data.length;
+
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); // local file header sig
+    lh.writeUInt16LE(20, 4);         // version needed
+    lh.writeUInt16LE(0, 6);          // flags
+    lh.writeUInt16LE(0, 8);          // method 0 = store
+    lh.writeUInt16LE(0, 10);         // mod time
+    lh.writeUInt16LE(0x21, 12);      // mod date (arbitrary fixed date)
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(size, 18);
+    lh.writeUInt32LE(size, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    lh.writeUInt16LE(0, 28);
+    locals.push(lh, nameBuf, f.data);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0); // central dir header sig
+    cd.writeUInt16LE(20, 4);         // version made by
+    cd.writeUInt16LE(20, 6);         // version needed
+    cd.writeUInt16LE(0, 8);          // flags
+    cd.writeUInt16LE(0, 10);         // method
+    cd.writeUInt16LE(0, 12);         // mod time
+    cd.writeUInt16LE(0x21, 14);      // mod date
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(size, 20);
+    cd.writeUInt32LE(size, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt32LE(offset, 42);    // local header offset
+    central.push(cd, nameBuf);
+
+    offset += lh.length + nameBuf.length + size;
+  }
+  const centralBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); // end of central dir sig
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);    // central dir offset
+  return Buffer.concat([...locals, centralBuf, eocd]);
+}
+
+app.get('/api/extension/download', (req, res) => {
+  try {
+    const extDir = path.join(__dirname, 'extension');
+    if (!fs.existsSync(extDir)) {
+      return res.status(404).json({ error: 'Extension folder not found on the server.' });
+    }
+    // Only ship the files the extension actually needs.
+    const wanted = ['manifest.json', 'popup.html', 'popup.js', 'README.md'];
+    const files = [];
+    for (const name of wanted) {
+      const p = path.join(extDir, name);
+      if (fs.existsSync(p)) files.push({ name, data: fs.readFileSync(p) });
+    }
+    if (!files.length) {
+      return res.status(404).json({ error: 'No extension files available to package.' });
+    }
+    const zip = buildZip(files);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename=quickads-instagram-connect.zip');
+    res.setHeader('Content-Length', zip.length);
+    return res.send(zip);
+  } catch (err) {
+    console.error('extension download error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // The extension POSTs the 3 required Instagram cookies here with the code.
 // Exempt from Basic auth (see middleware) — the code is the credential.
 app.post('/api/settings/cookies/import', (req, res) => {
