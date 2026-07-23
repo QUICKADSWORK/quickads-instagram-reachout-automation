@@ -1,18 +1,14 @@
 services:
   - type: web
     name: quickads-instagram-reachout
-    runtime: node
+    # Docker runtime (see Dockerfile). Uses Playwright's official image, which
+    # bundles Chromium + all required system libraries, so the "headless login"
+    # connect method works — Render's native Node runtime lacks those libs.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     # Persistent disks require a paid instance type. 'starter' is the lowest
     # paid tier that supports a disk — change to your actual paid plan.
     plan: starter
-    # Headless login (Settings → "Log in with username & password") needs a
-    # Chromium binary. This downloads it at build time. NOTE: Render's native
-    # Node runtime may still lack the system libraries Chromium needs — if
-    # headless login reports BROWSER_DEPS_MISSING, use the browser extension or
-    # paste-cookies methods instead, or switch this service to a Docker runtime.
-    # If you don't need headless login, you can revert this to just "npm install".
-    buildCommand: npm install && npx playwright install chromium
-    startCommand: node server.js
     envVars:
       - key: APIFY_TOKEN
         sync: false
@@ -32,8 +28,7 @@ services:
       # restarts. MUST match the disk mountPath.
       - key: DATA_DIR
         value: /var/data
-      - key: NODE_VERSION
-        value: 18.20.8
+      # Node version comes from the Docker base image, not NODE_VERSION.
     # Persistent disk — without this, the filesystem is wiped on every
     # deploy/restart (the cause of the disappearing campaigns).
     disk:

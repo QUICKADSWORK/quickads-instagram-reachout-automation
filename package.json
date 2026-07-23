@@ -14,6 +14,6 @@
     "xlsx": "^0.18.5"
   },
   "optionalDependencies": {
-    "playwright": "^1.44.0"
+    "playwright": "1.44.0"
   }
 }
