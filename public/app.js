@@ -791,6 +791,125 @@
     });
   }
 
+  // ─── CSV Import for the Ready-to-Go list ───────────────
+  // Full RFC-4180-ish parser: handles quoted fields, embedded commas,
+  // escaped double-quotes ("") and newlines inside quotes.
+  function parseCSV(text) {
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    text = text.replace(/^﻿/, ''); // strip BOM
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else field += c;
+      } else if (c === '"') {
+        inQuotes = true;
+      } else if (c === ',') {
+        row.push(field); field = '';
+      } else if (c === '\n') {
+        row.push(field); rows.push(row); row = []; field = '';
+      } else if (c !== '\r') {
+        field += c;
+      }
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    // Drop fully-empty rows.
+    return rows.filter(r => r.some(cell => String(cell).trim() !== ''));
+  }
+
+  const CSV_HEADER_ALIASES = {
+    username: ['username', 'user name', 'handle', 'account', 'profile', 'ig', 'instagram'],
+    fullName: ['full name', 'fullname', 'name', 'display name'],
+    followers: ['followers', 'followers count', 'follower', 'follower count'],
+    category: ['category', 'niche', 'topic'],
+    email: ['email', 'e-mail', 'mail'],
+    avgViews: ['avg views', 'average views', 'views'],
+    engagementRate: ['engagement rate', 'engagement', 'er', 'median er'],
+    notes: ['notes', 'note'],
+  };
+
+  // Parse followers strings like "48K", "1,234", "1.2M".
+  function parseFollowersLoose(v) {
+    if (v === undefined || v === null || v === '') return 0;
+    let s = String(v).trim().replace(/,/g, '');
+    const mult = /k$/i.test(s) ? 1e3 : /m$/i.test(s) ? 1e6 : 1;
+    s = s.replace(/[km]$/i, '');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? Math.round(n * mult) : 0;
+  }
+
+  // Map a header cell to a known field key, or null if unrecognized.
+  function matchHeader(cell) {
+    const norm = String(cell || '').trim().toLowerCase();
+    for (const [key, aliases] of Object.entries(CSV_HEADER_ALIASES)) {
+      if (aliases.includes(norm)) return key;
+    }
+    return null;
+  }
+
+  // Turn parsed CSV rows into influencer objects.
+  function rowsToInfluencers(rows) {
+    if (!rows.length) return [];
+    const first = rows[0];
+    const mapped = first.map(matchHeader);
+    const hasHeader = mapped.filter(Boolean).length >= 1;
+
+    const dataRows = hasHeader ? rows.slice(1) : rows;
+    // Positional fallback matches the bulk-add / CSV-export column order.
+    const positional = ['username', 'fullName', 'followers', 'category', 'email'];
+    const colMap = hasHeader ? mapped : positional;
+
+    return dataRows.map(cols => {
+      const rec = {};
+      cols.forEach((val, idx) => {
+        const key = colMap[idx];
+        if (key) rec[key] = String(val).trim();
+      });
+      const username = extractUsername(rec.username || '');
+      if (!username) return null;
+      return {
+        username,
+        fullName: rec.fullName || '',
+        followers: parseFollowersLoose(rec.followers),
+        category: rec.category || '',
+        email: rec.email || '',
+        notes: rec.notes || '',
+        ...(rec.avgViews ? { avgViews: parseFollowersLoose(rec.avgViews) } : {}),
+        ...(rec.engagementRate ? { engagementRate: parseFloat(String(rec.engagementRate).replace('%', '')) || null } : {}),
+      };
+    }).filter(Boolean);
+  }
+
+  const btnImportCsv = $('#btnImportCsv');
+  const rCsvFile = $('#rCsvFile');
+  if (btnImportCsv && rCsvFile) {
+    btnImportCsv.addEventListener('click', () => rCsvFile.click());
+    rCsvFile.addEventListener('change', async () => {
+      const file = rCsvFile.files && rCsvFile.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const rows = parseCSV(text);
+        const influencers = rowsToInfluencers(rows);
+        if (!influencers.length) {
+          showToast('No valid rows found in the CSV (need at least a username column).', 5000);
+          return;
+        }
+        const data = await addReady({ influencers });
+        if (data) {
+          showToast(`Imported ${influencers.length} rows — added ${data.added}, updated ${data.updated}.`, 5000);
+        }
+      } catch (err) {
+        showToast('Could not read CSV: ' + err.message, 6000);
+      } finally {
+        rCsvFile.value = ''; // allow re-importing the same file
+      }
+    });
+  }
+
   async function deleteReady(username) {
     if (!confirm(`Remove @${username} from your ready list?`)) return;
     const res = await fetch(`/api/ready-influencers/${encodeURIComponent(username)}`, { method: 'DELETE' });
