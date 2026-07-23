@@ -13,7 +13,8 @@ const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || '';
 
 // Single source of truth for the Claude model so negotiation + brand-fit
 // scoring stay in sync. Override with CLAUDE_MODEL if needed.
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+// (claude-sonnet-4-20250514 was retired; claude-sonnet-5 is its replacement.)
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
 
 // DATA_DIR is configurable so it can point at a persistent disk mount
 // (e.g. a Render Disk) — the default ./data folder is ephemeral on most
@@ -658,6 +659,10 @@ app.post('/api/brand-fit/score', async (req, res) => {
       body: JSON.stringify({
         model: CLAUDE_MODEL,
         max_tokens: 3000,
+        // Disable thinking so it doesn't consume the token budget (Sonnet 5+
+        // enables adaptive thinking by default). Harmlessly ignored by models
+        // that don't support the field.
+        thinking: { type: 'disabled' },
         system: buildBrandFitPrompt(brand),
         messages: [{ role: 'user', content: userContent }],
       }),
@@ -1307,6 +1312,7 @@ app.post('/api/negotiations/:id/generate', async (req, res) => {
       body: JSON.stringify({
         model: CLAUDE_MODEL,
         max_tokens: 500,
+        thinking: { type: 'disabled' },
         system: systemPrompt,
         messages: conversationHistory,
       }),
@@ -2454,6 +2460,7 @@ app.post('/api/autopilot/run', async (req, res) => {
           body: JSON.stringify({
             model: CLAUDE_MODEL,
             max_tokens: 500,
+            thinking: { type: 'disabled' },
             system: buildNegotiationPrompt(campaign, neg),
             messages: conversationHistory,
           }),
