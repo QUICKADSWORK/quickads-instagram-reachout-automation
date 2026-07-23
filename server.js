@@ -1843,23 +1843,35 @@ app.post('/api/settings/cookies/import', (req, res) => {
 let _chromiumPathCache;
 function resolveChromiumPath() {
   if (_chromiumPathCache !== undefined) return _chromiumPathCache;
+  const os = require('os');
   if (process.env.CHROMIUM_PATH && fs.existsSync(process.env.CHROMIUM_PATH)) {
     return (_chromiumPathCache = process.env.CHROMIUM_PATH);
   }
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  // Scan every place a Playwright/Chromium build might live — the pinned
+  // Playwright often expects a build number that differs from what's actually
+  // downloaded, so we probe rather than trust the default path.
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    path.join(os.homedir() || '', '.cache', 'ms-playwright'), // Linux default (incl. Render)
+    '/opt/render/.cache/ms-playwright',
+    path.join(__dirname, 'node_modules', 'playwright-core', '.local-browsers'),
+  ].filter(Boolean);
+  const subpaths = [
+    ['chrome-linux', 'chrome'],
+    ['chrome-linux', 'headless_shell'],
+    ['chrome-linux', 'chrome-headless-shell'],
+    ['chrome-headless-shell-linux64', 'chrome-headless-shell'],
+  ];
   const candidates = [];
-  try {
-    if (root && fs.existsSync(root)) {
+  for (const root of roots) {
+    try {
+      if (!fs.existsSync(root)) continue;
       for (const dir of fs.readdirSync(root)) {
         if (!/^chromium/i.test(dir)) continue;
-        candidates.push(
-          path.join(root, dir, 'chrome-linux', 'chrome'),
-          path.join(root, dir, 'chrome-linux', 'headless_shell'),
-          path.join(root, dir, 'chrome-linux', 'chrome-headless-shell'),
-        );
+        for (const sp of subpaths) candidates.push(path.join(root, dir, ...sp));
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
   const found = candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
   return (_chromiumPathCache = found || null);
 }
@@ -1947,7 +1959,22 @@ app.post('/api/settings/cookies/login', async (req, res) => {
   } catch (err) {
     try { if (browser) await browser.close(); } catch (_) {}
     console.error('headless login error:', err);
-    res.status(500).json({ error: `Headless login failed: ${err.message}` });
+    const m = String((err && err.message) || '');
+    // Browser binary not downloaded on the server.
+    if (/Executable doesn'?t exist|playwright install|Failed to launch the browser process|spawn .*ENOENT/i.test(m)) {
+      return res.status(501).json({
+        error: 'Chromium is not installed on this server, so headless login can\'t run here. Use the browser extension or paste-cookies method instead. (To enable headless login, the deploy build must run "npx playwright install chromium".)',
+        code: 'BROWSER_NOT_INSTALLED',
+      });
+    }
+    // Browser present but the OS is missing shared libraries it needs.
+    if (/error while loading shared librar|cannot open shared object|lib(nss3|atk|gbm|asound|xkbcommon)/i.test(m)) {
+      return res.status(501).json({
+        error: 'The server is missing system libraries Chromium needs, so headless login can\'t run here (common on non-Docker hosts). Use the browser extension or paste-cookies method instead.',
+        code: 'BROWSER_DEPS_MISSING',
+      });
+    }
+    res.status(500).json({ error: `Headless login failed: ${m}` });
   }
 });
 
