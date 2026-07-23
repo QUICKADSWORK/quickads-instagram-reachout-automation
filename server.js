@@ -1721,6 +1721,105 @@ app.get('/api/settings/pair', (req, res) => {
   res.json({ code, expiresAt, ttlSeconds: Math.round(PAIR_TTL_MS / 1000) });
 });
 
+// ── Download the browser extension as a .zip ───────────────
+// Packaged on the fly from the extension/ folder so it's always in sync with
+// the code. Zero-dependency, store-mode (uncompressed) ZIP — small enough that
+// no compression is needed and it avoids pulling in an archiver library.
+
+// Standard CRC-32 (used by the ZIP format).
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// Build a store-mode ZIP from [{ name, data:Buffer }].
+function buildZip(files) {
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name, 'utf8');
+    const crc = crc32(f.data);
+    const size = f.data.length;
+
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); // local file header sig
+    lh.writeUInt16LE(20, 4);         // version needed
+    lh.writeUInt16LE(0, 6);          // flags
+    lh.writeUInt16LE(0, 8);          // method 0 = store
+    lh.writeUInt16LE(0, 10);         // mod time
+    lh.writeUInt16LE(0x21, 12);      // mod date (arbitrary fixed date)
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(size, 18);
+    lh.writeUInt32LE(size, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    lh.writeUInt16LE(0, 28);
+    locals.push(lh, nameBuf, f.data);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0); // central dir header sig
+    cd.writeUInt16LE(20, 4);         // version made by
+    cd.writeUInt16LE(20, 6);         // version needed
+    cd.writeUInt16LE(0, 8);          // flags
+    cd.writeUInt16LE(0, 10);         // method
+    cd.writeUInt16LE(0, 12);         // mod time
+    cd.writeUInt16LE(0x21, 14);      // mod date
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(size, 20);
+    cd.writeUInt32LE(size, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt32LE(offset, 42);    // local header offset
+    central.push(cd, nameBuf);
+
+    offset += lh.length + nameBuf.length + size;
+  }
+  const centralBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); // end of central dir sig
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);    // central dir offset
+  return Buffer.concat([...locals, centralBuf, eocd]);
+}
+
+app.get('/api/extension/download', (req, res) => {
+  try {
+    const extDir = path.join(__dirname, 'extension');
+    if (!fs.existsSync(extDir)) {
+      return res.status(404).json({ error: 'Extension folder not found on the server.' });
+    }
+    // Only ship the files the extension actually needs.
+    const wanted = ['manifest.json', 'popup.html', 'popup.js', 'README.md'];
+    const files = [];
+    for (const name of wanted) {
+      const p = path.join(extDir, name);
+      if (fs.existsSync(p)) files.push({ name, data: fs.readFileSync(p) });
+    }
+    if (!files.length) {
+      return res.status(404).json({ error: 'No extension files available to package.' });
+    }
+    const zip = buildZip(files);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename=quickads-instagram-connect.zip');
+    res.setHeader('Content-Length', zip.length);
+    return res.send(zip);
+  } catch (err) {
+    console.error('extension download error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // The extension POSTs the 3 required Instagram cookies here with the code.
 // Exempt from Basic auth (see middleware) — the code is the credential.
 app.post('/api/settings/cookies/import', (req, res) => {
@@ -1744,23 +1843,35 @@ app.post('/api/settings/cookies/import', (req, res) => {
 let _chromiumPathCache;
 function resolveChromiumPath() {
   if (_chromiumPathCache !== undefined) return _chromiumPathCache;
+  const os = require('os');
   if (process.env.CHROMIUM_PATH && fs.existsSync(process.env.CHROMIUM_PATH)) {
     return (_chromiumPathCache = process.env.CHROMIUM_PATH);
   }
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  // Scan every place a Playwright/Chromium build might live — the pinned
+  // Playwright often expects a build number that differs from what's actually
+  // downloaded, so we probe rather than trust the default path.
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    path.join(os.homedir() || '', '.cache', 'ms-playwright'), // Linux default (incl. Render)
+    '/opt/render/.cache/ms-playwright',
+    path.join(__dirname, 'node_modules', 'playwright-core', '.local-browsers'),
+  ].filter(Boolean);
+  const subpaths = [
+    ['chrome-linux', 'chrome'],
+    ['chrome-linux', 'headless_shell'],
+    ['chrome-linux', 'chrome-headless-shell'],
+    ['chrome-headless-shell-linux64', 'chrome-headless-shell'],
+  ];
   const candidates = [];
-  try {
-    if (root && fs.existsSync(root)) {
+  for (const root of roots) {
+    try {
+      if (!fs.existsSync(root)) continue;
       for (const dir of fs.readdirSync(root)) {
         if (!/^chromium/i.test(dir)) continue;
-        candidates.push(
-          path.join(root, dir, 'chrome-linux', 'chrome'),
-          path.join(root, dir, 'chrome-linux', 'headless_shell'),
-          path.join(root, dir, 'chrome-linux', 'chrome-headless-shell'),
-        );
+        for (const sp of subpaths) candidates.push(path.join(root, dir, ...sp));
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
   const found = candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
   return (_chromiumPathCache = found || null);
 }
@@ -1848,7 +1959,22 @@ app.post('/api/settings/cookies/login', async (req, res) => {
   } catch (err) {
     try { if (browser) await browser.close(); } catch (_) {}
     console.error('headless login error:', err);
-    res.status(500).json({ error: `Headless login failed: ${err.message}` });
+    const m = String((err && err.message) || '');
+    // Browser binary not downloaded on the server.
+    if (/Executable doesn'?t exist|playwright install|Failed to launch the browser process|spawn .*ENOENT/i.test(m)) {
+      return res.status(501).json({
+        error: 'Chromium is not installed on this server, so headless login can\'t run here. Use the browser extension or paste-cookies method instead. (To enable headless login, the deploy build must run "npx playwright install chromium".)',
+        code: 'BROWSER_NOT_INSTALLED',
+      });
+    }
+    // Browser present but the OS is missing shared libraries it needs.
+    if (/error while loading shared librar|cannot open shared object|lib(nss3|atk|gbm|asound|xkbcommon)/i.test(m)) {
+      return res.status(501).json({
+        error: 'The server is missing system libraries Chromium needs, so headless login can\'t run here (common on non-Docker hosts). Use the browser extension or paste-cookies method instead.',
+        code: 'BROWSER_DEPS_MISSING',
+      });
+    }
+    res.status(500).json({ error: `Headless login failed: ${m}` });
   }
 });
 

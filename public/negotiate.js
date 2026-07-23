@@ -796,6 +796,16 @@
     });
   }
 
+  // ── Extension install steps toggle ────────────────────
+  const toggleInstallSteps = $('#toggleInstallSteps');
+  if (toggleInstallSteps) {
+    toggleInstallSteps.addEventListener('click', (e) => {
+      e.preventDefault();
+      const steps = $('#installSteps');
+      if (steps) steps.style.display = steps.style.display === 'none' ? 'block' : 'none';
+    });
+  }
+
   // ── Auto-connect: extension pairing code ──────────────
   const btnGenPair = $('#btnGenPair');
   if (btnGenPair) {

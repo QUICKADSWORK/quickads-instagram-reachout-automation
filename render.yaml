@@ -5,7 +5,13 @@ services:
     # Persistent disks require a paid instance type. 'starter' is the lowest
     # paid tier that supports a disk — change to your actual paid plan.
     plan: starter
-    buildCommand: npm install
+    # Headless login (Settings → "Log in with username & password") needs a
+    # Chromium binary. This downloads it at build time. NOTE: Render's native
+    # Node runtime may still lack the system libraries Chromium needs — if
+    # headless login reports BROWSER_DEPS_MISSING, use the browser extension or
+    # paste-cookies methods instead, or switch this service to a Docker runtime.
+    # If you don't need headless login, you can revert this to just "npm install".
+    buildCommand: npm install && npx playwright install chromium
     startCommand: node server.js
     envVars:
       - key: APIFY_TOKEN
