@@ -854,6 +854,7 @@
           body: JSON.stringify({ username, password, code }),
         });
         const data = await res.json().catch(() => ({}));
+        out.style.whiteSpace = 'pre-line';
         if (res.ok && data.ok) {
           out.className = 'cookie-status has-cookies';
           out.textContent = '✓ ' + (data.message || 'Connected!');
@@ -862,7 +863,7 @@
           checkCookies();
         } else {
           out.className = 'cookie-status no-cookies';
-          out.textContent = (data.error || 'Apify login failed.') + (data.hint ? ' — ' + data.hint : '');
+          out.textContent = (data.error || 'Apify login failed.') + (data.hint ? '\n\n' + data.hint : '');
         }
       } catch (err) {
         out.className = 'cookie-status no-cookies';
