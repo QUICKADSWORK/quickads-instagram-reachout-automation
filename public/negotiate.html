@@ -370,17 +370,30 @@
           </div>
         </div>
 
-        <!-- Method 2: Headless login (auto) -->
+        <!-- Method 2: Apify login (runs on Apify, no server browser) -->
         <div class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <div style="font-weight:600;margin-bottom:4px;">🔑 Login with Username &amp; Password</div>
-          <p class="modal-hint" style="margin:0 0 10px;">The server logs into Instagram for you and captures the session. Only works for accounts <b>without</b> 2FA / login challenges.</p>
+          <div style="font-weight:600;margin-bottom:4px;">🔒 Log in via Apify <span style="font-size:11px;color:var(--accent,#c3f53c);">works on any host</span></div>
+          <p class="modal-hint" style="margin:0 0 10px;">Logs in through an Apify actor (on Apify's servers, with proxies) and stores the returned cookies — no browser needed on this server. Uses your Apify credits. Enter a 2FA code only if your account asks for one.</p>
+          <div class="form-row">
+            <div class="form-group" style="flex:1;"><label for="fApifyUser">IG Username</label><input type="text" id="fApifyUser" placeholder="username" autocomplete="off" /></div>
+            <div class="form-group" style="flex:1;"><label for="fApifyPass">IG Password</label><input type="password" id="fApifyPass" placeholder="password" autocomplete="off" /></div>
+            <div class="form-group" style="flex:0.7;"><label for="fApifyCode">2FA code (optional)</label><input type="text" id="fApifyCode" placeholder="123456" autocomplete="off" /></div>
+          </div>
+          <button id="btnApifyLogin" class="btn btn-outline" type="button">Log In via Apify &amp; Connect</button>
+          <div id="apifyLoginResult" class="cookie-status" style="margin-top:8px;"></div>
+        </div>
+
+        <!-- Method 3: Local headless login (advanced / self-hosted) -->
+        <details class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <summary style="font-weight:600;cursor:pointer;">🔑 Local headless login (advanced)</summary>
+          <p class="modal-hint" style="margin:10px 0;">Runs Chromium <b>on this server</b> to log in. Needs Chromium + system libs (the Docker deploy) and only works for accounts <b>without</b> 2FA / login challenges. On most hosts, use "Log in via Apify" above instead.</p>
           <div class="form-row">
             <div class="form-group" style="flex:1;"><label for="fLoginUser">IG Username</label><input type="text" id="fLoginUser" placeholder="username" autocomplete="off" /></div>
             <div class="form-group" style="flex:1;"><label for="fLoginPass">IG Password</label><input type="password" id="fLoginPass" placeholder="password" autocomplete="off" /></div>
           </div>
           <button id="btnHeadlessLogin" class="btn btn-outline" type="button">Log In &amp; Connect</button>
           <div id="loginResult" class="cookie-status" style="margin-top:8px;"></div>
-        </div>
+        </details>
 
         <details style="margin-bottom:6px;">
           <summary style="cursor:pointer;font-weight:600;">📋 Paste cookies manually</summary>

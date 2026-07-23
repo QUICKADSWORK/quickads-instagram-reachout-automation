@@ -833,6 +833,47 @@
     });
   }
 
+  // ── Auto-connect: login via Apify actor ───────────────
+  const btnApifyLogin = $('#btnApifyLogin');
+  if (btnApifyLogin) {
+    btnApifyLogin.addEventListener('click', async () => {
+      const username = $('#fApifyUser').value.trim().replace(/^@/, '');
+      const password = $('#fApifyPass').value;
+      const code = $('#fApifyCode').value.trim();
+      const out = $('#apifyLoginResult');
+      if (!username || !password) { showToast('Enter IG username and password'); return; }
+
+      btnApifyLogin.disabled = true;
+      btnApifyLogin.textContent = 'Logging in via Apify…';
+      out.className = 'cookie-status';
+      out.textContent = 'Running the login actor on Apify (can take up to ~3 min)…';
+      try {
+        const res = await fetch('/api/settings/cookies/apify-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, code }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          out.className = 'cookie-status has-cookies';
+          out.textContent = '✓ ' + (data.message || 'Connected!');
+          $('#fApifyPass').value = '';
+          $('#fApifyCode').value = '';
+          checkCookies();
+        } else {
+          out.className = 'cookie-status no-cookies';
+          out.textContent = (data.error || 'Apify login failed.') + (data.hint ? ' — ' + data.hint : '');
+        }
+      } catch (err) {
+        out.className = 'cookie-status no-cookies';
+        out.textContent = 'Error: ' + err.message;
+      } finally {
+        btnApifyLogin.disabled = false;
+        btnApifyLogin.textContent = 'Log In via Apify & Connect';
+      }
+    });
+  }
+
   // ── Auto-connect: headless login ──────────────────────
   const btnHeadlessLogin = $('#btnHeadlessLogin');
   if (btnHeadlessLogin) {

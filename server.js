@@ -1504,6 +1504,86 @@ function filterRequiredCookies(cookies) {
     }));
 }
 
+// Parse a "sessionid=x; csrftoken=y; ds_user_id=z" cookie string into objects.
+function cookiesFromString(str) {
+  return String(str).split(/;\s*/).map(pair => {
+    const i = pair.indexOf('=');
+    if (i === -1) return null;
+    const name = pair.slice(0, i).trim();
+    const value = pair.slice(i + 1).trim();
+    if (!name) return null;
+    return { name, value, domain: '.instagram.com', path: '/' };
+  }).filter(Boolean);
+}
+
+// Turn a flat { sessionid: '..', csrftoken: '..' } object into cookie objects.
+function objToCookies(obj) {
+  const out = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string' || typeof v === 'number') {
+      out.push({ name: k, value: String(v), domain: '.instagram.com', path: '/' });
+    }
+  }
+  return out;
+}
+
+// Cookie-returning Apify actors are inconsistent — cookies may come back as an
+// array of {name,value}, a "a=b; c=d" string, a flat object keyed by cookie
+// name, or nested under cookies/session/data. Dig them out of any of these.
+function extractCookiesDeep(node, depth = 0) {
+  if (!node || depth > 5) return null;
+
+  if (Array.isArray(node)) {
+    if (node.some(x => x && typeof x === 'object' && x.name && ('value' in x))) {
+      return node.filter(x => x && x.name);
+    }
+    for (const el of node) {
+      const r = extractCookiesDeep(el, depth + 1);
+      if (r) return r;
+    }
+    return null;
+  }
+
+  if (typeof node === 'string') {
+    if (/sessionid=/.test(node)) {
+      const c = cookiesFromString(node);
+      if (c.length) return c;
+    }
+    return null;
+  }
+
+  if (typeof node === 'object') {
+    // Flat object keyed directly by cookie names.
+    if (REQUIRED_COOKIE_NAMES.some(n => n in node)) return objToCookies(node);
+    // Common container keys.
+    for (const key of ['cookies', 'sessionCookies', 'session', 'cookie', 'data', 'result', 'output']) {
+      if (node[key] !== undefined) {
+        if (typeof node[key] === 'string') {
+          const c = cookiesFromString(node[key]);
+          if (c.length) return c;
+        }
+        const r = extractCookiesDeep(node[key], depth + 1);
+        if (r) return r;
+      }
+    }
+    // Any string value that looks like a cookie string.
+    for (const v of Object.values(node)) {
+      if (typeof v === 'string' && /sessionid=/.test(v)) {
+        const c = cookiesFromString(v);
+        if (c.length) return c;
+      }
+    }
+    // Recurse into nested objects/arrays.
+    for (const v of Object.values(node)) {
+      if (v && typeof v === 'object') {
+        const r = extractCookiesDeep(v, depth + 1);
+        if (r) return r;
+      }
+    }
+  }
+  return null;
+}
+
 // Load cookies from disk, falling back to INSTAGRAM_COOKIES env var
 // (env var is useful on ephemeral hosts like Render free tier where
 //  the data/ folder is wiped on every cold start / redeploy).
@@ -1976,6 +2056,72 @@ app.post('/api/settings/cookies/login', async (req, res) => {
     }
     res.status(500).json({ error: `Headless login failed: ${m}` });
   }
+});
+
+// ── Auto-connect: login via an Apify actor ─────────────────
+// Runs an Apify actor that logs into Instagram (on Apify's infrastructure,
+// with proxies) and returns the session cookies — no browser needed on this
+// server. Actor id + input field names are env-configurable so you can point
+// it at a different actor without code changes.
+const IG_LOGIN_ACTOR_ID = process.env.IG_LOGIN_ACTOR_ID || 'shareze001~instagram-cookies';
+const IG_LOGIN_USER_FIELD = process.env.IG_LOGIN_USER_FIELD || 'username';
+const IG_LOGIN_PASS_FIELD = process.env.IG_LOGIN_PASS_FIELD || 'password';
+const IG_LOGIN_CODE_FIELD = process.env.IG_LOGIN_CODE_FIELD || 'code';
+
+app.post('/api/settings/cookies/apify-login', async (req, res) => {
+  const { username, password, code } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: 'username and password are required.' });
+  }
+  if (!APIFY_TOKEN) {
+    return res.status(400).json({ error: 'APIFY_TOKEN is not set on the server.' });
+  }
+
+  const input = {
+    [IG_LOGIN_USER_FIELD]: String(username).replace(/^@/, ''),
+    [IG_LOGIN_PASS_FIELD]: String(password),
+    ...(code ? { [IG_LOGIN_CODE_FIELD]: String(code) } : {}),
+  };
+
+  let apiRes, rawText;
+  try {
+    apiRes = await fetch(
+      `https://api.apify.com/v2/acts/${IG_LOGIN_ACTOR_ID}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(180000),
+      }
+    );
+    rawText = await apiRes.text();
+  } catch (err) {
+    return res.status(504).json({ error: `Could not reach Apify: ${err.message}` });
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(rawText); } catch (_) { parsed = rawText; }
+
+  if (!apiRes.ok) {
+    const msg = (parsed && parsed.error && (parsed.error.message || parsed.error)) || String(rawText).slice(0, 400);
+    return res.status(502).json({
+      error: `Apify actor error (${apiRes.status}): ${msg}. If it's an input-schema error, set IG_LOGIN_USER_FIELD / IG_LOGIN_PASS_FIELD / IG_LOGIN_CODE_FIELD to match the actor.`,
+    });
+  }
+
+  const found = extractCookiesDeep(parsed);
+  const filtered = filterRequiredCookies(found || []);
+  const check = validateCookies(filtered);
+  if (!check.ok) {
+    return res.status(422).json({
+      error: `Logged in via Apify but couldn't find the required cookies in the actor output. ${check.error}`,
+      hint: 'The actor may return a different shape or need 2FA. Check the raw sample, or switch IG_LOGIN_ACTOR_ID to another login actor.',
+      rawSample: (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 600),
+    });
+  }
+
+  writeDB('instagram_cookies.json', filtered);
+  res.json({ ok: true, count: filtered.length, actor: IG_LOGIN_ACTOR_ID, message: 'Instagram connected via Apify login.' });
 });
 
 // ═══════════════════════════════════════════════════════════
