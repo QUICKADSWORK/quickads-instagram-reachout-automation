@@ -342,7 +342,35 @@
         <button id="settingsClose" class="modal-close">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">Paste your Instagram cookies (JSON array) here. These are needed to send DMs via the Apify automation actor. Required cookies: <code>sessionid</code>, <code>ds_user_id</code>, <code>csrftoken</code>.</p>
+        <h3 style="margin:0 0 6px;font-size:15px;">Connect Instagram</h3>
+        <div id="connectStatus" class="cookie-status" style="margin-bottom:14px;"></div>
+
+        <!-- Method 1: Browser extension (auto) -->
+        <div class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <div style="font-weight:600;margin-bottom:4px;">🧩 Browser Extension <span style="font-size:11px;color:var(--accent,#c3f53c);">recommended</span></div>
+          <p class="modal-hint" style="margin:0 0 10px;">Install the QuickAds extension (in the <code>extension/</code> folder), generate a pairing code, and connect in one click while logged into Instagram.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <button id="btnGenPair" class="btn btn-outline" type="button">Generate Pairing Code</button>
+            <code id="pairCode" style="font-size:18px;letter-spacing:2px;display:none;padding:4px 10px;background:rgba(0,0,0,0.3);border-radius:6px;"></code>
+            <span id="pairExpiry" class="modal-hint" style="margin:0;"></span>
+          </div>
+        </div>
+
+        <!-- Method 2: Headless login (auto) -->
+        <div class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <div style="font-weight:600;margin-bottom:4px;">🔑 Login with Username &amp; Password</div>
+          <p class="modal-hint" style="margin:0 0 10px;">The server logs into Instagram for you and captures the session. Only works for accounts <b>without</b> 2FA / login challenges.</p>
+          <div class="form-row">
+            <div class="form-group" style="flex:1;"><label for="fLoginUser">IG Username</label><input type="text" id="fLoginUser" placeholder="username" autocomplete="off" /></div>
+            <div class="form-group" style="flex:1;"><label for="fLoginPass">IG Password</label><input type="password" id="fLoginPass" placeholder="password" autocomplete="off" /></div>
+          </div>
+          <button id="btnHeadlessLogin" class="btn btn-outline" type="button">Log In &amp; Connect</button>
+          <div id="loginResult" class="cookie-status" style="margin-top:8px;"></div>
+        </div>
+
+        <details style="margin-bottom:6px;">
+          <summary style="cursor:pointer;font-weight:600;">📋 Paste cookies manually</summary>
+          <p class="modal-hint" style="margin:10px 0;">Paste your Instagram cookies (JSON array) here. These are needed to send DMs via the Apify automation actor. Required cookies: <code>sessionid</code>, <code>ds_user_id</code>, <code>csrftoken</code>.</p>
         <div class="form-group">
           <label for="fCookies">Instagram Cookies (JSON)</label>
           <textarea id="fCookies" rows="8" placeholder='[{"name":"sessionid","value":"...","domain":".instagram.com",...}]'></textarea>
@@ -352,6 +380,7 @@
           <button id="btnSaveCookies" class="btn btn-primary">Save Cookies</button>
           <button id="btnTestCookies" class="btn btn-outline" type="button">Test Cookies (Inbox Check)</button>
         </div>
+        </details>
 
         <hr style="margin:18px 0;border:none;border-top:1px solid rgba(255,255,255,0.08);" />
 

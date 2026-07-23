@@ -311,6 +311,54 @@ Looking forward to hearing from you!</textarea>
       </div>
     </section>
 
+    <!-- ─── Brand Profile Card (for AI brand-fit scoring) ─── -->
+    <section id="brandCard" class="card dm-card">
+      <div class="card-header clickable" id="brandPanelToggle">
+        <div class="card-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+        </div>
+        <div>
+          <h2>Your Brand Profile</h2>
+          <p class="card-subtitle">Tell the AI about your brand — it scores each influencer 0–100 for fit</p>
+        </div>
+        <svg class="chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <div class="dm-body" id="brandBody">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="bfBrandName">Brand Name</label>
+            <input type="text" id="bfBrandName" placeholder="e.g. Acme Protein" />
+          </div>
+          <div class="form-group">
+            <label for="bfProductType">What You Sell</label>
+            <input type="text" id="bfProductType" placeholder="e.g. plant-based protein powder" />
+          </div>
+        </div>
+        <div class="form-group full-width">
+          <label for="bfDescription">Brand Description</label>
+          <textarea id="bfDescription" rows="2" placeholder="Short pitch: what your brand is and does"></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="bfAudience">Target Audience</label>
+            <input type="text" id="bfAudience" placeholder="e.g. women 18–34, fitness beginners" />
+          </div>
+          <div class="form-group">
+            <label for="bfIdealCreator">Ideal Creator</label>
+            <input type="text" id="bfIdealCreator" placeholder="e.g. micro fitness coaches, honest tone" />
+          </div>
+        </div>
+        <div class="form-group full-width">
+          <label for="bfValues">Brand Values / Must-Avoid</label>
+          <input type="text" id="bfValues" placeholder="e.g. sustainable, family-friendly, no alcohol" />
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button type="button" id="btnSaveBrand" class="btn btn-outline">Save Brand Profile</button>
+          <span id="brandSaveStatus" class="form-hint" style="margin:0;"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- ─── Results Card ────────────────────────────────── -->
     <section id="resultsCard" class="card results-card" style="display:none;">
       <div class="results-header">
@@ -320,6 +368,10 @@ Looking forward to hearing from you!</textarea>
           <span id="dmCounter" class="dm-counter-badge"></span>
         </div>
         <div class="results-actions">
+          <button id="btnScoreFit" class="btn btn-primary" title="Score all results for brand fit with AI">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m6.34 6.34-.7-.7"/><path d="M2 12h4"/><circle cx="12" cy="14" r="4"/><path d="M12 18v.01"/></svg>
+            Score Brand Fit
+          </button>
           <button id="btnDmAll" class="btn btn-outline btn-dm-all" title="DM all uncontacted">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
             DM All
@@ -341,9 +393,12 @@ Looking forward to hearing from you!</textarea>
             <tr>
               <th>#</th>
               <th>Profile</th>
+              <th>Brand Fit</th>
               <th>Full Name</th>
               <th>Followers</th>
+              <th>Avg Views</th>
               <th>Engagement</th>
+              <th>Posts/wk</th>
               <th>Quality</th>
               <th>Email</th>
               <th>Category</th>

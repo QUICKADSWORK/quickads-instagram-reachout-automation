@@ -11,6 +11,10 @@ const PORT = process.env.PORT || 3000;
 const APIFY_TOKEN = process.env.APIFY_TOKEN || '';
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || '';
 
+// Single source of truth for the Claude model so negotiation + brand-fit
+// scoring stay in sync. Override with CLAUDE_MODEL if needed.
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+
 // DATA_DIR is configurable so it can point at a persistent disk mount
 // (e.g. a Render Disk) — the default ./data folder is ephemeral on most
 // PaaS free tiers and gets wiped on every redeploy / cold start.
@@ -32,6 +36,10 @@ app.use(express.json({ limit: '10mb' }));
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
 if (APP_PASSWORD) {
   app.use((req, res, next) => {
+    // The browser-extension cookie import is authenticated by a one-time
+    // pairing token (minted by an already-authenticated in-app action), so
+    // it is exempt from Basic auth — the extension can't send a password.
+    if (req.path === '/api/settings/cookies/import') return next();
     const hdr = req.headers.authorization || '';
     const [scheme, encoded] = hdr.split(' ');
     if (scheme === 'Basic' && encoded) {
@@ -313,6 +321,118 @@ async function waitForRunCompletion(runId, { onTick } = {}) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+//  Influencer Analytics
+//  Derives avg views, avg likes, engagement rate, follower ratio
+//  and posting frequency from whatever the Apify actor returns.
+//  Actors vary wildly in field casing and whether they include a
+//  recent-posts array, so every getter is defensive with fallbacks
+//  and returns null (never a fake 0) when the signal is absent.
+// ═══════════════════════════════════════════════════════════
+
+// Pull the first present key from an object, trying many name variants.
+function pick(obj, keys) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+  }
+  return undefined;
+}
+
+// Parse "12.3K", "1,234", "2.5%", 1234 -> Number (or null if unparseable).
+function toNum(v) {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  let s = String(v).trim().replace(/%/g, '').replace(/,/g, '');
+  const mult = /k$/i.test(s) ? 1e3 : /m$/i.test(s) ? 1e6 : /b$/i.test(s) ? 1e9 : 1;
+  s = s.replace(/[kmb]$/i, '');
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n * mult : null;
+}
+
+function avg(nums) {
+  const valid = nums.filter(n => typeof n === 'number' && Number.isFinite(n));
+  if (!valid.length) return null;
+  return valid.reduce((a, b) => a + b, 0) / valid.length;
+}
+
+// Find the recent-posts array under any of the common key names.
+function extractPosts(item) {
+  const candidates = ['latestPosts', 'posts', 'recentPosts', 'topPosts', 'latestIgtvVideos', 'timeline', 'media'];
+  for (const key of candidates) {
+    const v = item[key];
+    if (Array.isArray(v) && v.length) return v;
+  }
+  return [];
+}
+
+function postLikes(p) { return toNum(pick(p, ['likesCount', 'likes', 'likeCount', 'like_count', 'likesCountNumber'])); }
+function postComments(p) { return toNum(pick(p, ['commentsCount', 'comments', 'commentCount', 'comment_count'])); }
+function postViews(p) {
+  return toNum(pick(p, ['videoViewCount', 'videoPlayCount', 'playCount', 'views', 'videoViews', 'view_count', 'play_count', 'igPlayCount', 'reelPlayCount']));
+}
+function postTimestamp(p) {
+  const raw = pick(p, ['timestamp', 'takenAt', 'taken_at', 'taken_at_timestamp', 'date', 'createdAt']);
+  if (raw === undefined) return null;
+  // Unix seconds vs ISO string vs ms.
+  if (typeof raw === 'number') return raw < 1e12 ? raw * 1000 : raw;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t : null;
+}
+
+// Compute the analytics block for a single scraped profile.
+function computeAnalytics(item) {
+  const followers = toNum(pick(item, ['Followers Count', 'followersCount', 'followers_count', 'followers']));
+  const following = toNum(pick(item, ['Following Count', 'followingCount', 'following_count', 'follows', 'followsCount']));
+  const posts = extractPosts(item);
+
+  // Prefer explicit aggregate fields the actor may already provide.
+  let avgLikes = toNum(pick(item, ['avgLikes', 'averageLikes', 'avg_likes', 'meanLikes']));
+  let avgComments = toNum(pick(item, ['avgComments', 'averageComments', 'avg_comments', 'meanComments']));
+  let avgViews = toNum(pick(item, ['avgViews', 'averageViews', 'avgVideoViews', 'avg_video_views', 'avgPlays', 'averagePlays', 'avgReelViews']));
+
+  // Otherwise derive from the recent-posts array.
+  if (posts.length) {
+    if (avgLikes === null) avgLikes = avg(posts.map(postLikes));
+    if (avgComments === null) avgComments = avg(posts.map(postComments));
+    if (avgViews === null) {
+      const views = posts.map(postViews).filter(v => typeof v === 'number' && v > 0);
+      if (views.length) avgViews = avg(views);
+    }
+  }
+
+  // Engagement rate: trust the actor's value if present, else compute.
+  let engagementRate = toNum(pick(item, ['Median ER', 'engagement_rate', 'engagementRate', 'medianEngagementRate', 'engagement']));
+  if (engagementRate === null && followers && (avgLikes !== null || avgComments !== null)) {
+    engagementRate = ((avgLikes || 0) + (avgComments || 0)) / followers * 100;
+  }
+
+  // Posting frequency (posts/week) from timestamp span.
+  let postsPerWeek = null;
+  const times = posts.map(postTimestamp).filter(Boolean).sort((a, b) => a - b);
+  if (times.length >= 2) {
+    const spanDays = (times[times.length - 1] - times[0]) / 86400000;
+    if (spanDays >= 1) postsPerWeek = (times.length - 1) / spanDays * 7;
+    else postsPerWeek = times.length; // all within a day
+  }
+
+  const followerRatio = followers && following ? followers / following : null;
+
+  const round = (n, d = 2) => (n === null ? null : Math.round(n * 10 ** d) / 10 ** d);
+
+  return {
+    followers: followers,
+    following: following,
+    avgViews: round(avgViews, 0),
+    avgLikes: round(avgLikes, 0),
+    avgComments: round(avgComments, 0),
+    engagementRate: round(engagementRate, 2),
+    followerRatio: round(followerRatio, 2),
+    postsPerWeek: round(postsPerWeek, 1),
+    sampleSize: posts.length,
+  };
+}
+
 app.post('/api/scrape', async (req, res) => {
   try {
     const { seedAccounts, minFollowers, maxFollowers, maxProfiles, niche, location } = req.body;
@@ -410,7 +530,16 @@ app.get('/api/status/:runId', async (req, res) => {
 app.get('/api/results/:datasetId', async (req, res) => {
   try {
     const items = await fetchDatasetItems(req.params.datasetId);
-    return res.json(items);
+    // Attach a computed analytics block to each profile so the frontend
+    // gets avg views / ER / posting cadence without re-deriving it.
+    const enriched = Array.isArray(items)
+      ? items.map(it => {
+          if (!it || typeof it !== 'object') return it;
+          try { return { ...it, analytics: computeAnalytics(it) }; }
+          catch (_) { return it; }
+        })
+      : items;
+    return res.json(enriched);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -435,6 +564,150 @@ app.post('/api/export/excel', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  Brand Profile + AI Brand-Fit Scoring
+//  Store one brand profile describing what the user sells and who
+//  they want to reach, then let Claude score each influencer 0-100
+//  for how good a fit they are — with short reasoning + red flags.
+// ═══════════════════════════════════════════════════════════
+
+function normalizeBrandProfile(raw) {
+  raw = raw || {};
+  return {
+    brandName: String(raw.brandName || '').trim(),
+    website: String(raw.website || '').trim(),
+    description: String(raw.description || '').trim(),
+    productType: String(raw.productType || '').trim(),
+    targetAudience: String(raw.targetAudience || '').trim(),
+    values: String(raw.values || '').trim(),
+    idealCreator: String(raw.idealCreator || '').trim(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+app.get('/api/brand-profile', (req, res) => {
+  const stored = readDB('brand_profile.json', {});
+  res.json(stored && !Array.isArray(stored) ? stored : {});
+});
+
+app.post('/api/brand-profile', (req, res) => {
+  const profile = normalizeBrandProfile(req.body);
+  if (!profile.brandName && !profile.description) {
+    return res.status(400).json({ error: 'Provide at least a brand name or description.' });
+  }
+  writeDB('brand_profile.json', profile);
+  res.json({ ok: true, profile });
+});
+
+function buildBrandFitPrompt(brand) {
+  return `You are an expert influencer-marketing strategist. Score how well each Instagram influencer fits the brand below for a PAID collaboration.
+
+BRAND:
+- Name: ${brand.brandName || 'N/A'}
+- What they sell: ${brand.productType || brand.description || 'N/A'}
+- Description: ${brand.description || 'N/A'}
+- Target audience: ${brand.targetAudience || 'N/A'}
+- Brand values: ${brand.values || 'N/A'}
+- Ideal creator: ${brand.idealCreator || 'N/A'}
+
+For EACH influencer, judge audience match, content/niche alignment, brand-safety, and whether their engagement looks healthy for their size. Weigh real audience fit over raw follower count.
+
+Return ONLY a JSON array, no prose, no markdown fences. One object per influencer, same order as given:
+[{"username":"<handle>","score":<0-100 integer>,"verdict":"<3-6 word summary>","reasons":["<short reason>","<short reason>"],"redFlags":["<short flag or omit if none>"]}]
+
+Scoring guide: 80-100 excellent fit, 60-79 good, 40-59 marginal, 0-39 poor.`;
+}
+
+app.post('/api/brand-fit/score', async (req, res) => {
+  try {
+    if (!CLAUDE_API_KEY) {
+      return res.status(400).json({ error: 'CLAUDE_API_KEY is not set on the server.' });
+    }
+    let { brand, influencers } = req.body || {};
+    if (!brand || typeof brand !== 'object' || (!brand.brandName && !brand.description)) {
+      const stored = readDB('brand_profile.json', {});
+      if (stored && !Array.isArray(stored) && (stored.brandName || stored.description)) brand = stored;
+    }
+    if (!brand || (!brand.brandName && !brand.description)) {
+      return res.status(400).json({ error: 'No brand profile provided. Fill in the Brand Profile first.' });
+    }
+    if (!Array.isArray(influencers) || !influencers.length) {
+      return res.status(400).json({ error: 'Provide a non-empty influencers array.' });
+    }
+
+    // Cap per request to keep the Claude call fast + within token limits.
+    const batch = influencers.slice(0, 25).map(i => ({
+      username: String(i.username || '').replace(/^@/, ''),
+      fullName: i.fullName || '',
+      category: i.category || '',
+      bio: (i.bio || '').slice(0, 300),
+      followers: i.followers ?? null,
+      engagementRate: i.engagementRate ?? null,
+      avgViews: i.avgViews ?? null,
+      avgLikes: i.avgLikes ?? null,
+    }));
+
+    const userContent = `Influencers to score (JSON):\n${JSON.stringify(batch, null, 2)}`;
+
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 3000,
+        system: buildBrandFitPrompt(brand),
+        messages: [{ role: 'user', content: userContent }],
+      }),
+    });
+
+    if (!claudeRes.ok) {
+      const errBody = await claudeRes.text();
+      return res.status(500).json({ error: `Claude API error: ${errBody.slice(0, 500)}` });
+    }
+
+    const claudeData = await claudeRes.json();
+    let text = (claudeData.content?.[0]?.text || '').trim();
+    // Strip accidental markdown fences.
+    text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    // Grab the outermost JSON array if the model added stray text.
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    if (start !== -1 && end !== -1) text = text.slice(start, end + 1);
+
+    let scores;
+    try {
+      scores = JSON.parse(text);
+    } catch (err) {
+      return res.status(502).json({ error: 'Could not parse AI scoring response.', raw: text.slice(0, 500) });
+    }
+    if (!Array.isArray(scores)) scores = [];
+
+    // Normalize + key by username so the frontend can merge easily.
+    const byUser = {};
+    for (const s of scores) {
+      if (!s || !s.username) continue;
+      const uname = String(s.username).replace(/^@/, '').toLowerCase();
+      const scoreNum = Math.max(0, Math.min(100, Math.round(Number(s.score) || 0)));
+      byUser[uname] = {
+        username: uname,
+        score: scoreNum,
+        verdict: String(s.verdict || '').trim(),
+        reasons: Array.isArray(s.reasons) ? s.reasons.map(r => String(r)).slice(0, 4) : [],
+        redFlags: Array.isArray(s.redFlags) ? s.redFlags.map(r => String(r)).filter(Boolean).slice(0, 4) : [],
+      };
+    }
+
+    res.json({ ok: true, scored: Object.keys(byUser).length, scores: byUser });
+  } catch (err) {
+    console.error('brand-fit score error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 //  Ready-to-Go Influencer Roster
 //  A saved list of known-good creators you can DM instantly,
 //  no scraping needed. Persisted to ready_influencers.json.
@@ -446,13 +719,24 @@ function normalizeReadyInfluencer(raw) {
     .trim().replace(/^@/, '').replace(/\/$/, '')
     .replace('https://instagram.com/', '').replace('https://www.instagram.com/', '');
   if (!username) return null;
+  // Carry through analytics + brand-fit if the caller passed them (from the
+  // Discovery table). Kept flat + optional so old records stay valid.
+  const a = raw.analytics && typeof raw.analytics === 'object' ? raw.analytics : {};
+  const num = v => (v === undefined || v === null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
   return {
     username,
     fullName: String(raw.fullName || raw.name || '').trim(),
-    followers: Number(raw.followers) || 0,
+    followers: Number(raw.followers) || num(a.followers) || 0,
     category: String(raw.category || '').trim(),
     email: String(raw.email || '').trim(),
     notes: String(raw.notes || '').trim(),
+    avgViews: num(raw.avgViews) ?? num(a.avgViews),
+    avgLikes: num(raw.avgLikes) ?? num(a.avgLikes),
+    engagementRate: num(raw.engagementRate) ?? num(a.engagementRate),
+    followerRatio: num(raw.followerRatio) ?? num(a.followerRatio),
+    postsPerWeek: num(raw.postsPerWeek) ?? num(a.postsPerWeek),
+    fitScore: num(raw.fitScore),
+    fitVerdict: raw.fitVerdict ? String(raw.fitVerdict).trim() : undefined,
     addedAt: raw.addedAt || new Date().toISOString(),
   };
 }
@@ -1021,7 +1305,7 @@ app.post('/api/negotiations/:id/generate', async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: CLAUDE_MODEL,
         max_tokens: 500,
         system: systemPrompt,
         messages: conversationHistory,
@@ -1177,6 +1461,48 @@ app.patch('/api/negotiations/:id', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 
 const REQUIRED_COOKIE_NAMES = ['sessionid', 'ds_user_id', 'csrftoken'];
+
+// One-time pairing codes for the browser extension. A code is minted by an
+// authenticated in-app action, shown to the user, entered into the extension,
+// and consumed on first use. Short TTL, in-memory only.
+const PAIR_TTL_MS = 10 * 60 * 1000;
+const pairingCodes = new Map(); // code -> expiresAt
+
+function mintPairingCode() {
+  // 6-digit human-typable code.
+  const code = String(100000 + Math.floor(genId().split('').reduce((a, c) => a + c.charCodeAt(0), 0) * 7919 % 900000));
+  const expiresAt = Date.now() + PAIR_TTL_MS;
+  pairingCodes.set(code, expiresAt);
+  // Sweep expired codes.
+  for (const [c, exp] of pairingCodes) if (exp < Date.now()) pairingCodes.delete(c);
+  return { code, expiresAt };
+}
+
+function consumePairingCode(code) {
+  const exp = pairingCodes.get(String(code || ''));
+  if (!exp) return false;
+  pairingCodes.delete(String(code));
+  return exp >= Date.now();
+}
+
+// Keep only the cookies the app actually needs, normalized to the standard
+// {name, value, domain, path, ...} shape Instagram cookie exporters produce.
+function filterRequiredCookies(cookies) {
+  if (!Array.isArray(cookies)) return [];
+  const wanted = new Set(REQUIRED_COOKIE_NAMES);
+  return cookies
+    .filter(c => c && wanted.has(c.name))
+    .map(c => ({
+      name: c.name,
+      value: String(c.value ?? ''),
+      domain: c.domain || '.instagram.com',
+      path: c.path || '/',
+      secure: c.secure !== false,
+      httpOnly: !!c.httpOnly,
+      sameSite: c.sameSite || 'Lax',
+      ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
+    }));
+}
 
 // Load cookies from disk, falling back to INSTAGRAM_COOKIES env var
 // (env var is useful on ephemeral hosts like Render free tier where
@@ -1385,6 +1711,145 @@ app.post('/api/settings/test-dm', async (req, res) => {
   const result = await sendDMviaApify(cookies, String(username).replace(/^@/, ''), message);
   if (!result.ok) return res.status(500).json(result);
   res.json(result);
+});
+
+// ── Auto-import: browser extension ─────────────────────────
+// Mint a one-time pairing code (this endpoint is behind the app's normal
+// auth). The user types the code into the extension.
+app.get('/api/settings/pair', (req, res) => {
+  const { code, expiresAt } = mintPairingCode();
+  res.json({ code, expiresAt, ttlSeconds: Math.round(PAIR_TTL_MS / 1000) });
+});
+
+// The extension POSTs the 3 required Instagram cookies here with the code.
+// Exempt from Basic auth (see middleware) — the code is the credential.
+app.post('/api/settings/cookies/import', (req, res) => {
+  const { code, cookies } = req.body || {};
+  if (!consumePairingCode(code)) {
+    return res.status(401).json({ error: 'Invalid or expired pairing code. Generate a new one in the app.' });
+  }
+  const filtered = filterRequiredCookies(cookies);
+  const check = validateCookies(filtered);
+  if (!check.ok) {
+    return res.status(400).json({ error: check.error });
+  }
+  writeDB('instagram_cookies.json', filtered);
+  res.json({ ok: true, count: filtered.length, message: 'Instagram connected via extension.' });
+});
+
+// Resolve a Chromium executable. Prefers CHROMIUM_PATH, then whatever
+// Playwright shipped/pre-installed under PLAYWRIGHT_BROWSERS_PATH (the build
+// number often differs from what the pinned Playwright expects, so we probe
+// for any chrome/chrome-headless-shell binary rather than trust the default).
+let _chromiumPathCache;
+function resolveChromiumPath() {
+  if (_chromiumPathCache !== undefined) return _chromiumPathCache;
+  if (process.env.CHROMIUM_PATH && fs.existsSync(process.env.CHROMIUM_PATH)) {
+    return (_chromiumPathCache = process.env.CHROMIUM_PATH);
+  }
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  const candidates = [];
+  try {
+    if (root && fs.existsSync(root)) {
+      for (const dir of fs.readdirSync(root)) {
+        if (!/^chromium/i.test(dir)) continue;
+        candidates.push(
+          path.join(root, dir, 'chrome-linux', 'chrome'),
+          path.join(root, dir, 'chrome-linux', 'headless_shell'),
+          path.join(root, dir, 'chrome-linux', 'chrome-headless-shell'),
+        );
+      }
+    }
+  } catch (_) {}
+  const found = candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+  return (_chromiumPathCache = found || null);
+}
+
+// ── Auto-import: headless login ────────────────────────────
+// Logs into Instagram with a real headless Chromium (Playwright) and
+// captures the session cookies. Playwright is an optional dependency and
+// lazy-required, so the app still runs everywhere without it.
+app.post('/api/settings/cookies/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: 'username and password are required.' });
+  }
+
+  let chromium;
+  try {
+    ({ chromium } = require('playwright'));
+  } catch (_) {
+    return res.status(501).json({
+      error: 'Headless login is not available on this server (the "playwright" package is not installed). Use the browser extension or paste cookies instead.',
+      code: 'PLAYWRIGHT_MISSING',
+    });
+  }
+
+  let browser;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      ...(resolveChromiumPath() ? { executablePath: resolveChromiumPath() } : {}),
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+    });
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 800 },
+    });
+    const page = await context.newPage();
+    await page.goto('https://www.instagram.com/accounts/login/', { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+    // Dismiss cookie-consent banner if present (EU).
+    try {
+      await page.click('button:has-text("Allow all cookies"), button:has-text("Accept")', { timeout: 4000 });
+    } catch (_) {}
+
+    await page.fill('input[name="username"]', String(username), { timeout: 20000 });
+    await page.fill('input[name="password"]', String(password));
+    await page.click('button[type="submit"]');
+
+    // Give Instagram a moment to respond (redirect, error, or challenge).
+    await page.waitForTimeout(6000);
+
+    const url = page.url();
+    const bodyText = (await page.textContent('body').catch(() => '')) || '';
+
+    // Detect 2FA / checkpoint / bad password before reading cookies.
+    if (/two-factor|verificationCode|security code|challenge|checkpoint/i.test(url + bodyText)) {
+      await browser.close();
+      return res.status(422).json({
+        error: 'Instagram requires 2FA or a security checkpoint for this login. Complete it in a normal browser, then use the extension or paste cookies. Headless login only works for accounts without a login challenge.',
+        code: 'CHALLENGE_REQUIRED',
+      });
+    }
+    if (/incorrect|wasn.t right|try again|find your account/i.test(bodyText) && !/[?&]/.test(url.replace('accounts/login', ''))) {
+      // Heuristic: still on login page with an error message.
+      const allCookies = await context.cookies();
+      if (!allCookies.some(c => c.name === 'sessionid' && c.value)) {
+        await browser.close();
+        return res.status(401).json({ error: 'Instagram rejected the username or password.' });
+      }
+    }
+
+    const raw = await context.cookies();
+    await browser.close();
+
+    const igCookies = raw.filter(c => /instagram\.com$/.test(c.domain) || c.domain.includes('instagram'));
+    const filtered = filterRequiredCookies(igCookies);
+    const check = validateCookies(filtered);
+    if (!check.ok) {
+      return res.status(401).json({
+        error: 'Login did not produce a valid Instagram session (no sessionid). The account may need a login challenge — use the extension or paste cookies instead.',
+      });
+    }
+
+    writeDB('instagram_cookies.json', filtered);
+    res.json({ ok: true, count: filtered.length, message: 'Instagram connected via headless login.' });
+  } catch (err) {
+    try { if (browser) await browser.close(); } catch (_) {}
+    console.error('headless login error:', err);
+    res.status(500).json({ error: `Headless login failed: ${err.message}` });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -1715,7 +2180,7 @@ app.post('/api/autopilot/run', async (req, res) => {
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: CLAUDE_MODEL,
             max_tokens: 500,
             system: buildNegotiationPrompt(campaign, neg),
             messages: conversationHistory,

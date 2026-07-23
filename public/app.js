@@ -26,8 +26,14 @@
   const dmToastMessage = $('#dmToastMessage');
   const btnDmAll = $('#btnDmAll');
   const dmCounter = $('#dmCounter');
+  const btnScoreFit = $('#btnScoreFit');
+  const btnSaveBrand = $('#btnSaveBrand');
+  const brandSaveStatus = $('#brandSaveStatus');
+  const brandPanelToggle = $('#brandPanelToggle');
+  const brandBody = $('#brandBody');
 
   let currentResults = [];
+  let fitScores = {}; // username(lower) -> { score, verdict, reasons[], redFlags[] }
 
   // ─── DM Tracking via localStorage ───────────────────────
   const DM_STORAGE_KEY = 'influencerfind_dmd_users';
@@ -241,8 +247,12 @@
     items.forEach((item, i) => {
       const username = extractUsername(item['Account'] || item['account'] || item['username'] || '');
       const fullName = item['Full Name'] || item['fullName'] || item['full_name'] || '';
-      const followers = item['Followers Count'] || item['followersCount'] || item['followers_count'] || 0;
-      const er = item['Median ER'] || item['engagement_rate'] || item['engagementRate'] || '';
+      const a = item.analytics || {};
+      const followers = a.followers ?? (item['Followers Count'] || item['followersCount'] || item['followers_count'] || 0);
+      const erRaw = a.engagementRate ?? item['Median ER'] ?? item['engagement_rate'] ?? item['engagementRate'] ?? '';
+      const er = (typeof erRaw === 'number') ? erRaw.toFixed(2) + '%' : (erRaw || '');
+      const avgViews = a.avgViews;
+      const postsWk = a.postsPerWeek;
       const quality = item['Quality'] || item['quality'] || '';
       const email = item['Email'] || item['email'] || '';
       const category = item['Category'] || item['category'] || '';
@@ -259,6 +269,7 @@
       const dmBtnLabel = alreadyDMd ? '&#10003; DM Sent' : '&#128172; Send DM';
 
       const tr = document.createElement('tr');
+      tr.dataset.username = (username || '').toLowerCase();
       tr.innerHTML = `
         <td>${i + 1}</td>
         <td>
@@ -267,9 +278,12 @@
             <a href="${esc(profileUrl)}" target="_blank" rel="noopener">@${esc(username) || '—'}</a>
           </div>
         </td>
+        <td class="fit-cell">${renderFitCell(username)}</td>
         <td>${esc(fullName) || '—'}</td>
         <td>${formatNumber(followers)}</td>
+        <td>${avgViews != null ? formatNumber(avgViews) : '—'}</td>
         <td>${esc(er) || '—'}</td>
+        <td>${postsWk != null ? postsWk : '—'}</td>
         <td><span class="badge ${qualityClass}">${esc(quality) || 'N/A'}</span></td>
         <td>${esc(email) || '—'}</td>
         <td>${esc(category) || '—'}</td>
@@ -376,6 +390,129 @@
     });
   });
 
+  // ─── Brand Profile + AI Brand-Fit Scoring ──────────────
+  const BRAND_FIELDS = {
+    brandName: '#bfBrandName', productType: '#bfProductType', description: '#bfDescription',
+    targetAudience: '#bfAudience', idealCreator: '#bfIdealCreator', values: '#bfValues',
+  };
+
+  function readBrandForm() {
+    const out = {};
+    for (const [k, sel] of Object.entries(BRAND_FIELDS)) out[k] = ($(sel)?.value || '').trim();
+    return out;
+  }
+
+  async function loadBrandProfile() {
+    try {
+      const res = await fetch('/api/brand-profile');
+      const p = await res.json();
+      if (p && typeof p === 'object') {
+        for (const [k, sel] of Object.entries(BRAND_FIELDS)) {
+          if (p[k] && $(sel)) $(sel).value = p[k];
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (brandPanelToggle) {
+    brandPanelToggle.addEventListener('click', () => brandBody.parentElement.classList.toggle('open'));
+  }
+
+  if (btnSaveBrand) {
+    btnSaveBrand.addEventListener('click', async () => {
+      const profile = readBrandForm();
+      if (!profile.brandName && !profile.description) {
+        brandSaveStatus.textContent = 'Add at least a brand name or description.';
+        return;
+      }
+      btnSaveBrand.disabled = true;
+      brandSaveStatus.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/brand-profile', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(profile),
+        });
+        const data = await res.json();
+        brandSaveStatus.textContent = res.ok ? '✓ Saved' : (data.error || 'Save failed');
+      } catch (err) {
+        brandSaveStatus.textContent = 'Save failed: ' + err.message;
+      } finally {
+        btnSaveBrand.disabled = false;
+      }
+    });
+  }
+
+  function fitClass(score) {
+    if (score >= 80) return 'badge-good';
+    if (score >= 60) return 'badge-good';
+    if (score >= 40) return 'badge-unknown';
+    return 'badge-poor';
+  }
+
+  // Renders the Brand Fit cell for a username from the current fitScores map.
+  function renderFitCell(username) {
+    const s = fitScores[(username || '').toLowerCase()];
+    if (!s) return '<span class="badge badge-unknown">—</span>';
+    const tip = [s.verdict, ...(s.reasons || []), ...(s.redFlags || []).map(f => '⚠ ' + f)]
+      .filter(Boolean).join(' • ');
+    return `<span class="badge ${fitClass(s.score)}" title="${esc(tip)}">${s.score}</span>`;
+  }
+
+  function refreshFitCells() {
+    $$('#resultsBody tr').forEach(tr => {
+      const cell = tr.querySelector('.fit-cell');
+      if (cell) cell.innerHTML = renderFitCell(tr.dataset.username);
+    });
+  }
+
+  if (btnScoreFit) {
+    btnScoreFit.addEventListener('click', async () => {
+      if (!currentResults.length) { showToast('Find some influencers first.'); return; }
+      const brand = readBrandForm();
+      if (!brand.brandName && !brand.description) {
+        showToast('Fill in your Brand Profile first (name or description).');
+        brandBody.parentElement.classList.add('open');
+        return;
+      }
+
+      const influencers = currentResults.slice(0, 25).map(item => {
+        const a = item.analytics || {};
+        return {
+          username: extractUsername(item['Account'] || item['account'] || item['username'] || ''),
+          fullName: item['Full Name'] || item['fullName'] || item['full_name'] || '',
+          category: item['Category'] || item['category'] || '',
+          bio: item['Biography'] || item['biography'] || item['bio'] || '',
+          followers: a.followers ?? item['Followers Count'] ?? item['followersCount'] ?? null,
+          engagementRate: a.engagementRate ?? null,
+          avgViews: a.avgViews ?? null,
+          avgLikes: a.avgLikes ?? null,
+        };
+      }).filter(i => i.username);
+
+      const original = btnScoreFit.innerHTML;
+      btnScoreFit.disabled = true;
+      btnScoreFit.innerHTML = `<span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;"></span> Scoring…`;
+      try {
+        const res = await fetch('/api/brand-fit/score', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ brand, influencers }),
+        });
+        const data = await res.json();
+        if (!res.ok) { showError(data.error || 'Scoring failed.'); return; }
+        fitScores = Object.assign(fitScores, data.scores || {});
+        refreshFitCells();
+        showToast(`Scored ${data.scored} influencers for brand fit.`);
+      } catch (err) {
+        showError('Scoring failed: ' + err.message);
+      } finally {
+        btnScoreFit.disabled = false;
+        btnScoreFit.innerHTML = original;
+      }
+    });
+  }
+
+  loadBrandProfile();
+
   // ─── Batch DM All ──────────────────────────────────────
   btnDmAll.addEventListener('click', async () => {
     if (!currentResults.length) return;
@@ -469,20 +606,31 @@
   });
 
   function mapExportData(items) {
-    return items.map(item => ({
-      Profile: item['Account'] || item['account'] || '',
-      'Full Name': item['Full Name'] || item['fullName'] || '',
-      Followers: item['Followers Count'] || item['followersCount'] || '',
-      Following: item['Following Count'] || item['followingCount'] || '',
-      'Engagement Rate': item['Median ER'] || item['engagement_rate'] || '',
-      Quality: item['Quality'] || item['quality'] || '',
-      Email: item['Email'] || item['email'] || '',
-      Phone: item['Phone'] || item['phone'] || '',
-      Website: item['External URL'] || item['externalUrl'] || '',
-      Category: item['Category'] || item['category'] || '',
-      Bio: item['Biography'] || item['biography'] || '',
-      Language: item['Detected Language'] || item['detectedLanguage'] || '',
-    }));
+    return items.map(item => {
+      const a = item.analytics || {};
+      const uname = extractUsername(item['Account'] || item['account'] || item['username'] || '');
+      const fit = fitScores[(uname || '').toLowerCase()];
+      return {
+        Profile: item['Account'] || item['account'] || '',
+        'Full Name': item['Full Name'] || item['fullName'] || '',
+        Followers: a.followers ?? item['Followers Count'] ?? item['followersCount'] ?? '',
+        Following: a.following ?? item['Following Count'] ?? item['followingCount'] ?? '',
+        'Avg Views': a.avgViews ?? '',
+        'Avg Likes': a.avgLikes ?? '',
+        'Engagement Rate': a.engagementRate ?? item['Median ER'] ?? item['engagement_rate'] ?? '',
+        'Follower Ratio': a.followerRatio ?? '',
+        'Posts/Week': a.postsPerWeek ?? '',
+        'Brand Fit Score': fit ? fit.score : '',
+        'Brand Fit Verdict': fit ? fit.verdict : '',
+        Quality: item['Quality'] || item['quality'] || '',
+        Email: item['Email'] || item['email'] || '',
+        Phone: item['Phone'] || item['phone'] || '',
+        Website: item['External URL'] || item['externalUrl'] || '',
+        Category: item['Category'] || item['category'] || '',
+        Bio: item['Biography'] || item['biography'] || '',
+        Language: item['Detected Language'] || item['detectedLanguage'] || '',
+      };
+    });
   }
 
   function downloadBlob(content, filename, type) {

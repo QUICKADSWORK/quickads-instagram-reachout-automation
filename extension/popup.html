@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuickAds — Instagram Connect</title>
+  <style>
+    :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --text:#e7ebf0; --muted:#8b93a1; --accent:#c6ff3a; --accent-t:#0f1115; --danger:#ff5a5a; --ok:#2ec27e; }
+    * { box-sizing: border-box; }
+    body { width: 340px; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    .wrap { padding: 16px; }
+    h1 { font-size: 15px; margin: 0 0 2px; display:flex; align-items:center; gap:8px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+    .dot.on { background: var(--ok); }
+    p.sub { font-size: 11px; color: var(--muted); margin: 0 0 14px; line-height: 1.4; }
+    label { font-size: 11px; color: var(--muted); display:block; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+    input { width: 100%; padding: 9px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font-size: 13px; }
+    input:focus { outline: none; border-color: var(--accent); }
+    button { width: 100%; margin-top: 14px; padding: 10px; background: var(--accent); color: var(--accent-t); border: none; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .status { margin-top: 12px; font-size: 12px; padding: 9px 10px; border-radius: 8px; display: none; line-height: 1.4; }
+    .status.show { display: block; }
+    .status.ok { background: rgba(46,194,126,.12); color: var(--ok); border: 1px solid rgba(46,194,126,.3); }
+    .status.err { background: rgba(255,90,90,.1); color: var(--danger); border: 1px solid rgba(255,90,90,.3); }
+    .status.info { background: var(--card); color: var(--muted); border: 1px solid var(--line); }
+    .hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1><span class="dot" id="igDot"></span> Connect Instagram</h1>
+    <p class="sub">Reads only <b>sessionid</b>, <b>ds_user_id</b> &amp; <b>csrftoken</b> from your logged-in Instagram session and sends them to your app.</p>
+
+    <label for="appUrl">Your app URL</label>
+    <input id="appUrl" type="text" placeholder="https://your-app.onrender.com" autocomplete="off" spellcheck="false" />
+    <div class="hint">The address where your QuickAds Reachout app is hosted.</div>
+
+    <label for="code">Pairing code</label>
+    <input id="code" type="text" inputmode="numeric" placeholder="6-digit code from the app" autocomplete="off" />
+    <div class="hint">In the app: Settings &rarr; Connect Instagram &rarr; "Generate pairing code".</div>
+
+    <button id="connect">Connect Instagram</button>
+    <div class="status" id="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

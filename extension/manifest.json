@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "QuickAds — Instagram Connect",
+  "version": "1.0.0",
+  "description": "Securely send your logged-in Instagram session cookies to your QuickAds Reachout app. Only the 3 required cookies are read.",
+  "permissions": ["cookies", "storage"],
+  "host_permissions": ["https://*.instagram.com/*"],
+  "optional_host_permissions": ["*://*/*"],
+  "action": {
+    "default_title": "QuickAds — Instagram Connect",
+    "default_popup": "popup.html"
+  }
+}
