@@ -31,8 +31,11 @@ DM sending needs your Instagram session cookies (`sessionid`, `ds_user_id`,
    upload.
 2. **Headless login** — Enter your IG username/password; the server logs in via
    Playwright and captures the session. Only works for accounts **without** 2FA
-   or a login checkpoint. Requires the optional `playwright` package + a
-   Chromium binary (`npx playwright install chromium`).
+   or a login checkpoint. This needs Chromium **and** its system libraries on
+   the server, so the app ships a `Dockerfile` (built on Playwright's official
+   image) and `render.yaml` deploys via that Docker runtime. On plain Node
+   hosts without those libraries, headless login reports `BROWSER_DEPS_MISSING`
+   — use the extension or paste method there.
 3. **Paste cookies manually** — Paste the cookie JSON array (from a cookie
    exporter extension) under "Paste cookies manually".
 
