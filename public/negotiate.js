@@ -720,16 +720,20 @@
       if (res.ok) data = await res.json();
     } catch {}
     const el = $('#cookieStatus');
+    const top = $('#connectStatus');
+    let cls, msg;
     if (data.hasCookies && data.valid) {
-      el.className = 'cookie-status has-cookies';
-      el.textContent = `Instagram cookies configured (${data.count} cookies, source: ${data.source || 'disk'})`;
+      cls = 'cookie-status has-cookies';
+      msg = `✓ Instagram connected (${data.count} cookies, source: ${data.source || 'disk'})`;
     } else if (data.hasCookies && !data.valid) {
-      el.className = 'cookie-status no-cookies';
-      el.textContent = data.error || 'Cookies are incomplete. Re-export and paste again.';
+      cls = 'cookie-status no-cookies';
+      msg = data.error || 'Cookies are incomplete. Re-connect or re-export.';
     } else {
-      el.className = 'cookie-status no-cookies';
-      el.textContent = 'No Instagram cookies configured yet. DM sending will not work.';
+      cls = 'cookie-status no-cookies';
+      msg = 'Not connected. Use one of the methods below to connect Instagram.';
     }
+    if (el) { el.className = cls; el.textContent = msg; }
+    if (top) { top.className = cls; top.textContent = msg; }
   }
 
   $('#btnSettings').addEventListener('click', () => {
@@ -788,6 +792,72 @@
       } finally {
         btnTestCookies.disabled = false;
         btnTestCookies.textContent = 'Test Cookies (Inbox Check)';
+      }
+    });
+  }
+
+  // ── Auto-connect: extension pairing code ──────────────
+  const btnGenPair = $('#btnGenPair');
+  if (btnGenPair) {
+    btnGenPair.addEventListener('click', async () => {
+      btnGenPair.disabled = true;
+      try {
+        const res = await fetch('/api/settings/pair');
+        const data = await res.json();
+        if (res.ok && data.code) {
+          const codeEl = $('#pairCode');
+          codeEl.textContent = data.code;
+          codeEl.style.display = 'inline-block';
+          const mins = Math.round((data.ttlSeconds || 600) / 60);
+          $('#pairExpiry').textContent = `Enter this in the extension within ${mins} min.`;
+          // Re-check connection shortly after — the extension may import in the background.
+          setTimeout(checkCookies, 4000);
+        } else {
+          showToast(data.error || 'Could not generate code', 6000);
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message, 6000);
+      } finally {
+        btnGenPair.disabled = false;
+      }
+    });
+  }
+
+  // ── Auto-connect: headless login ──────────────────────
+  const btnHeadlessLogin = $('#btnHeadlessLogin');
+  if (btnHeadlessLogin) {
+    btnHeadlessLogin.addEventListener('click', async () => {
+      const username = $('#fLoginUser').value.trim().replace(/^@/, '');
+      const password = $('#fLoginPass').value;
+      const out = $('#loginResult');
+      if (!username || !password) { showToast('Enter IG username and password'); return; }
+
+      btnHeadlessLogin.disabled = true;
+      btnHeadlessLogin.textContent = 'Logging in…';
+      out.className = 'cookie-status';
+      out.textContent = 'Launching browser and logging in (up to ~30s)…';
+      try {
+        const res = await fetch('/api/settings/cookies/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          out.className = 'cookie-status has-cookies';
+          out.textContent = '✓ ' + (data.message || 'Connected!');
+          $('#fLoginPass').value = '';
+          checkCookies();
+        } else {
+          out.className = 'cookie-status no-cookies';
+          out.textContent = data.error || 'Login failed.';
+        }
+      } catch (err) {
+        out.className = 'cookie-status no-cookies';
+        out.textContent = 'Error: ' + err.message;
+      } finally {
+        btnHeadlessLogin.disabled = false;
+        btnHeadlessLogin.textContent = 'Log In & Connect';
       }
     });
   }
