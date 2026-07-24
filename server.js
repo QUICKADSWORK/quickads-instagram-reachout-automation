@@ -2069,10 +2069,90 @@ app.post('/api/settings/cookies/login', async (req, res) => {
 // with proxies) and returns the session cookies — no browser needed on this
 // server. Actor id + input field names are env-configurable so you can point
 // it at a different actor without code changes.
-const IG_LOGIN_ACTOR_ID = process.env.IG_LOGIN_ACTOR_ID || 'shareze001~instagram-cookies';
-const IG_LOGIN_USER_FIELD = process.env.IG_LOGIN_USER_FIELD || 'username';
-const IG_LOGIN_PASS_FIELD = process.env.IG_LOGIN_PASS_FIELD || 'password';
-const IG_LOGIN_CODE_FIELD = process.env.IG_LOGIN_CODE_FIELD || 'code';
+// Candidate login actors, tried in order until one returns valid cookies.
+// Each entry maps our {username,password,code} to the actor's own input field
+// names. Field mappings are best-effort (Apify schemas vary); override the
+// whole list with IG_LOGIN_ACTOR_ID (+ IG_LOGIN_*_FIELD) to force a single one.
+const DEFAULT_LOGIN_ACTORS = [
+  // Pay-per-login ($ from credits, no monthly rental); uses `email`; supports 2FA.
+  { id: 'zen-studio~instagram-login', user: 'email', pass: 'password', code: 'code' },
+  // Simple username/password; note: this one is a paid RENTAL actor.
+  { id: 'shareze001~instagram-cookies', user: 'username', pass: 'password', code: 'code' },
+  // Generic session/login extractor with MFA support.
+  { id: 'pragmaticcoders~session-login-extractor', user: 'username', pass: 'password', code: 'code' },
+];
+
+function loginActorList() {
+  if (process.env.IG_LOGIN_ACTOR_ID) {
+    return [{
+      id: process.env.IG_LOGIN_ACTOR_ID,
+      user: process.env.IG_LOGIN_USER_FIELD || 'username',
+      pass: process.env.IG_LOGIN_PASS_FIELD || 'password',
+      code: process.env.IG_LOGIN_CODE_FIELD || 'code',
+    }];
+  }
+  return DEFAULT_LOGIN_ACTORS;
+}
+
+// Run one login actor and classify the outcome without throwing.
+async function runLoginActor(actor, username, password, code) {
+  const input = {
+    [actor.user]: String(username).replace(/^@/, ''),
+    [actor.pass]: String(password),
+    ...(code ? { [actor.code]: String(code) } : {}),
+  };
+
+  let apiRes, rawText;
+  try {
+    apiRes = await fetch(
+      `https://api.apify.com/v2/acts/${actor.id}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(180000),
+      }
+    );
+    rawText = await apiRes.text();
+  } catch (err) {
+    return { actor: actor.id, outcome: 'unreachable', error: `Could not reach Apify: ${err.message}` };
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(rawText); } catch (_) { parsed = rawText; }
+
+  if (!apiRes.ok) {
+    const msg = (parsed && parsed.error && (parsed.error.message || parsed.error)) || String(rawText).slice(0, 300);
+    const rental = apiRes.status === 403 && /rent|paid actor|trial/i.test(String(msg));
+    return {
+      actor: actor.id,
+      outcome: rental ? 'needs_rental' : `http_${apiRes.status}`,
+      error: rental ? 'Requires a rented/paid actor on your Apify account.' : `Actor error (${apiRes.status}): ${msg}`,
+    };
+  }
+
+  // Detect a 2FA / checkpoint challenge in the output.
+  const blob = (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).toLowerCase();
+  const needs2fa = /pending_2fa|two[_-]?factor|verification code|checkpoint|challenge_required/.test(blob);
+
+  const found = extractCookiesDeep(parsed);
+  const filtered = filterRequiredCookies(found || []);
+  if (validateCookies(filtered).ok) {
+    return { actor: actor.id, outcome: 'ok', cookies: filtered };
+  }
+  if (needs2fa) {
+    return { actor: actor.id, outcome: 'needs_2fa', error: 'Instagram asked for a 2FA / verification code.' };
+  }
+  if (/incorrect|wrong password|invalid|not.*(match|correct)|bad credentials/.test(blob)) {
+    return { actor: actor.id, outcome: 'bad_credentials', error: 'Instagram rejected the username or password.' };
+  }
+  return {
+    actor: actor.id,
+    outcome: 'no_cookies',
+    error: 'Login ran but no session cookies were found in the output.',
+    rawSample: (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 300),
+  };
+}
 
 app.post('/api/settings/cookies/apify-login', async (req, res) => {
   const { username, password, code } = req.body || {};
@@ -2083,51 +2163,41 @@ app.post('/api/settings/cookies/apify-login', async (req, res) => {
     return res.status(400).json({ error: 'APIFY_TOKEN is not set on the server.' });
   }
 
-  const input = {
-    [IG_LOGIN_USER_FIELD]: String(username).replace(/^@/, ''),
-    [IG_LOGIN_PASS_FIELD]: String(password),
-    ...(code ? { [IG_LOGIN_CODE_FIELD]: String(code) } : {}),
-  };
-
-  let apiRes, rawText;
-  try {
-    apiRes = await fetch(
-      `https://api.apify.com/v2/acts/${IG_LOGIN_ACTOR_ID}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-        signal: AbortSignal.timeout(180000),
-      }
-    );
-    rawText = await apiRes.text();
-  } catch (err) {
-    return res.status(504).json({ error: `Could not reach Apify: ${err.message}` });
+  const actors = loginActorList();
+  const attempts = [];
+  for (const actor of actors) {
+    const result = await runLoginActor(actor, username, password, code);
+    attempts.push({ actor: result.actor, outcome: result.outcome, error: result.error });
+    if (result.outcome === 'ok') {
+      writeDB('instagram_cookies.json', result.cookies);
+      return res.json({
+        ok: true,
+        count: result.cookies.length,
+        actor: result.actor,
+        attempts,
+        message: `Instagram connected via ${result.actor}.`,
+      });
+    }
+    // Stop early and ask for the code if an actor clearly needs 2FA.
+    if (result.outcome === 'needs_2fa' && !code) {
+      return res.status(422).json({
+        error: `${result.actor} needs a 2FA / verification code. Enter the 6-digit code and try again.`,
+        code: 'NEEDS_2FA',
+        attempts,
+      });
+    }
+    if (result.outcome === 'bad_credentials') {
+      return res.status(401).json({ error: result.error, attempts });
+    }
   }
 
-  let parsed;
-  try { parsed = JSON.parse(rawText); } catch (_) { parsed = rawText; }
-
-  if (!apiRes.ok) {
-    const msg = (parsed && parsed.error && (parsed.error.message || parsed.error)) || String(rawText).slice(0, 400);
-    return res.status(502).json({
-      error: `Apify actor error (${apiRes.status}): ${msg}. If it's an input-schema error, set IG_LOGIN_USER_FIELD / IG_LOGIN_PASS_FIELD / IG_LOGIN_CODE_FIELD to match the actor.`,
-    });
-  }
-
-  const found = extractCookiesDeep(parsed);
-  const filtered = filterRequiredCookies(found || []);
-  const check = validateCookies(filtered);
-  if (!check.ok) {
-    return res.status(422).json({
-      error: `Logged in via Apify but couldn't find the required cookies in the actor output. ${check.error}`,
-      hint: 'The actor may return a different shape or need 2FA. Check the raw sample, or switch IG_LOGIN_ACTOR_ID to another login actor.',
-      rawSample: (typeof parsed === 'string' ? parsed : JSON.stringify(parsed)).slice(0, 600),
-    });
-  }
-
-  writeDB('instagram_cookies.json', filtered);
-  res.json({ ok: true, count: filtered.length, actor: IG_LOGIN_ACTOR_ID, message: 'Instagram connected via Apify login.' });
+  // Nothing worked — summarize what each actor said.
+  const summary = attempts.map(a => `• ${a.actor}: ${a.error || a.outcome}`).join('\n');
+  res.status(422).json({
+    error: `Couldn't connect via any Apify login actor.\n${summary}`,
+    hint: 'Rent one of the paid actors, set IG_LOGIN_ACTOR_ID to a working one, or use the browser extension / paste method.',
+    attempts,
+  });
 });
 
 // ═══════════════════════════════════════════════════════════

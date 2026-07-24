@@ -373,7 +373,7 @@
         <!-- Method 2: Apify login (runs on Apify, no server browser) -->
         <div class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
           <div style="font-weight:600;margin-bottom:4px;">🔒 Log in via Apify <span style="font-size:11px;color:var(--accent,#c3f53c);">works on any host</span></div>
-          <p class="modal-hint" style="margin:0 0 10px;">Logs in through an Apify actor (on Apify's servers, with proxies) and stores the returned cookies — no browser needed on this server. Uses your Apify credits. Enter a 2FA code only if your account asks for one.</p>
+          <p class="modal-hint" style="margin:0 0 10px;">Logs in through an Apify actor (on Apify's servers, with proxies) and stores the returned cookies — no browser needed on this server. Tries several login actors automatically and uses the first that works; some actors require renting on your Apify account. Uses your Apify credits. Enter a 2FA code only if your account asks for one.</p>
           <div class="form-row">
             <div class="form-group" style="flex:1;"><label for="fApifyUser">IG Username</label><input type="text" id="fApifyUser" placeholder="username" autocomplete="off" /></div>
             <div class="form-group" style="flex:1;"><label for="fApifyPass">IG Password</label><input type="password" id="fApifyPass" placeholder="password" autocomplete="off" /></div>
