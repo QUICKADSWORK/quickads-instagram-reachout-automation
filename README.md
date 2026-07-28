@@ -13,8 +13,37 @@ Discover Instagram influencers, send DMs, and let an AI agent negotiate paid col
 - **Autopilot Mode** — Automatically reads creator replies, generates smart responses, and sends them back
 - **Campaign Management** — Set brand, budget range, and campaign brief per campaign
 - **Deal Dashboard** — Track negotiation status, conversation history, and total spend
+- **Email Outreach** — Upload a contact sheet (.xlsx/.csv), write one template, and send personalized emails from your own mailbox; every send is logged
 - **Export** — CSV and Excel export of discovered influencers (incl. analytics + fit scores)
 - **DM Tracking** — Tracks who you've contacted via localStorage
+
+## Email Outreach
+
+Open **Email Outreach** in the top nav. Four steps:
+
+1. **Send From** — connect the mailbox your emails come from (Gmail, Outlook,
+   Zoho, SendGrid, Brevo, Mailgun, or any custom SMTP). Gmail needs an
+   [App Password](https://myaccount.google.com/apppasswords), not your normal
+   password. Use **Test** to verify the login (and optionally send yourself a
+   test email).
+2. **Contacts** — upload an `.xlsx` or `.csv`. A column named **Email** is
+   required; **Full Name** / **First Name** are used for personalization, and
+   any other column (Company, City, …) becomes a `{{variable}}` you can use in
+   your message. Re-importing merges by email instead of duplicating.
+3. **Message** — write a subject + body, click a chip to insert a variable, and
+   see a live preview rendered against a real contact.
+4. **Send** — pick the sender, template, audience (*everyone* or *only people
+   never emailed before*) and the delay between emails, then start. Live
+   progress, and **Stop** takes effect immediately.
+
+**Results** keeps every campaign and every individual send (status, subject,
+error) with a CSV export. Everything is stored on disk in `DATA_DIR`:
+`email_senders.json`, `email_contacts.json`, `email_templates.json`,
+`email_campaigns.json`, `email_sends.json`.
+
+> Passwords are write-only — they're never returned by the API. Mind your
+> provider's daily limits (Gmail ≈ 500/day, Workspace ≈ 2,000) and keep a delay
+> between emails so your account isn't flagged.
 
 ## Connecting Instagram
 
@@ -101,6 +130,22 @@ Open **http://localhost:3000** in your browser.
 | GET | `/api/status/:runId` | Poll scraper status |
 | GET | `/api/results/:datasetId` | Fetch discovered profiles (each with a computed `analytics` block) |
 | POST | `/api/export/excel` | Export as Excel |
+
+### Email Outreach
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/email/providers` | SMTP presets for common providers |
+| GET/POST | `/api/email/senders` | List/save sending mailboxes (password write-only) |
+| POST | `/api/email/senders/:id/test` | Verify SMTP login, optionally send a test email |
+| GET | `/api/email/contacts` | List contacts |
+| POST | `/api/email/contacts/import` | Import an .xlsx/.csv sheet (base64) |
+| GET/POST | `/api/email/templates` | List/save templates |
+| POST | `/api/email/templates/preview` | Render a template against a contact |
+| GET/POST | `/api/email/campaigns` | List/create (and start) a campaign |
+| POST | `/api/email/campaigns/:id/stop` | Stop a running campaign |
+| GET | `/api/email/sends` | Every individual send result |
+| GET | `/api/email/sends/export` | Download all results as CSV |
+| GET | `/api/email/stats` | Contact/send/campaign totals |
 
 ### Brand Fit
 | Method | Endpoint | Description |

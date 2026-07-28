@@ -114,7 +114,8 @@ app.get('/api/health', (req, res) => {
   } catch (_) {}
 
   const counts = {};
-  for (const f of ['campaigns.json', 'negotiations.json', 'ready_influencers.json']) {
+  for (const f of ['campaigns.json', 'negotiations.json', 'ready_influencers.json',
+                   'email_contacts.json', 'email_campaigns.json', 'email_sends.json']) {
     try { counts[f] = readDB(f).length; } catch (_) { counts[f] = 'error'; }
   }
 
@@ -2625,8 +2626,733 @@ app.post('/api/autopilot/run', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  Email Outreach
+//  Upload a contact sheet, write a template, and send
+//  personalized emails from your own mailbox over SMTP.
+//  Everything — sender accounts, contacts, templates, campaigns
+//  and every individual send result — is persisted to DATA_DIR.
+// ═══════════════════════════════════════════════════════════
+
+const EMAIL_SENDERS_FILE = 'email_senders.json';
+const EMAIL_CONTACTS_FILE = 'email_contacts.json';
+const EMAIL_TEMPLATES_FILE = 'email_templates.json';
+const EMAIL_CAMPAIGNS_FILE = 'email_campaigns.json';
+const EMAIL_SENDS_FILE = 'email_sends.json';
+
+// Lazy-require so the app still boots if the dependency is missing.
+let _nodemailer;
+function getNodemailer() {
+  if (_nodemailer === undefined) {
+    try { _nodemailer = require('nodemailer'); }
+    catch (_) { _nodemailer = null; }
+  }
+  return _nodemailer;
+}
+
+// Ready-made SMTP settings for common mailbox providers, so the user only
+// has to supply an address + app password.
+const SMTP_PRESETS = [
+  { id: 'gmail', label: 'Gmail / Google Workspace', host: 'smtp.gmail.com', port: 465, secure: true,
+    hint: 'Use a Google App Password (myaccount.google.com → Security → App passwords), not your normal password. Needs 2-Step Verification on.' },
+  { id: 'outlook', label: 'Outlook / Microsoft 365', host: 'smtp-mail.outlook.com', port: 587, secure: false,
+    hint: 'If 2FA is on, create an app password in your Microsoft account security settings.' },
+  { id: 'zoho', label: 'Zoho Mail', host: 'smtp.zoho.com', port: 465, secure: true,
+    hint: 'Generate an app-specific password in Zoho → My Account → Security.' },
+  { id: 'sendgrid', label: 'SendGrid', host: 'smtp.sendgrid.net', port: 587, secure: false, presetUser: 'apikey',
+    hint: 'Username is literally "apikey". Password is your SendGrid API key.' },
+  { id: 'brevo', label: 'Brevo (Sendinblue)', host: 'smtp-relay.brevo.com', port: 587, secure: false,
+    hint: 'Use the SMTP key from Brevo → SMTP & API.' },
+  { id: 'mailgun', label: 'Mailgun', host: 'smtp.mailgun.org', port: 587, secure: false,
+    hint: 'Use the SMTP credentials shown on your Mailgun sending domain.' },
+  { id: 'custom', label: 'Other / custom SMTP', host: '', port: 587, secure: false,
+    hint: 'Enter the SMTP host and port from your email provider.' },
+];
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isEmail(v) {
+  return EMAIL_RE.test(String(v || '').trim());
+}
+
+// Strip the stored password before sending a sender back over the API.
+function publicSender(s) {
+  if (!s) return s;
+  const { pass, ...rest } = s;
+  return { ...rest, hasPassword: !!pass };
+}
+
+function normalizeSender(raw, existing) {
+  raw = raw || {};
+  const prev = existing || {};
+  const fromEmail = String(raw.fromEmail ?? prev.fromEmail ?? '').trim();
+  const port = Number(raw.port ?? prev.port ?? 587);
+  return {
+    id: prev.id || genId(),
+    label: String(raw.label ?? prev.label ?? '').trim() || fromEmail,
+    fromName: String(raw.fromName ?? prev.fromName ?? '').trim(),
+    fromEmail,
+    replyTo: String(raw.replyTo ?? prev.replyTo ?? '').trim(),
+    host: String(raw.host ?? prev.host ?? '').trim(),
+    port: Number.isFinite(port) ? port : 587,
+    secure: raw.secure === undefined ? (prev.secure ?? port === 465) : !!raw.secure,
+    user: String(raw.user ?? prev.user ?? '').trim() || fromEmail,
+    // Only overwrite the password when a new one is actually supplied.
+    pass: raw.pass ? String(raw.pass) : (prev.pass || ''),
+    createdAt: prev.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function buildTransport(sender) {
+  const nodemailer = getNodemailer();
+  if (!nodemailer) {
+    const err = new Error('The "nodemailer" package is not installed on this server. Run: npm install nodemailer');
+    err.code = 'NODEMAILER_MISSING';
+    throw err;
+  }
+  return nodemailer.createTransport({
+    host: sender.host,
+    port: sender.port,
+    secure: !!sender.secure,
+    auth: { user: sender.user, pass: sender.pass },
+    // Keep a single connection open across a campaign instead of
+    // reconnecting per message.
+    pool: true,
+    maxConnections: 1,
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 30000,
+  });
+}
+
+app.get('/api/email/providers', (req, res) => {
+  res.json(SMTP_PRESETS);
+});
+
+app.get('/api/email/senders', (req, res) => {
+  res.json(readDB(EMAIL_SENDERS_FILE).map(publicSender));
+});
+
+app.post('/api/email/senders', (req, res) => {
+  const body = req.body || {};
+  const senders = readDB(EMAIL_SENDERS_FILE);
+  const existing = body.id ? senders.find(s => s.id === body.id) : null;
+  const sender = normalizeSender(body, existing);
+
+  if (!isEmail(sender.fromEmail)) {
+    return res.status(400).json({ error: 'A valid "from" email address is required.' });
+  }
+  if (!sender.host) {
+    return res.status(400).json({ error: 'SMTP host is required. Pick a provider to fill it in automatically.' });
+  }
+  if (!sender.pass) {
+    return res.status(400).json({ error: 'Password / app password is required.' });
+  }
+  if (sender.replyTo && !isEmail(sender.replyTo)) {
+    return res.status(400).json({ error: 'Reply-to must be a valid email address.' });
+  }
+
+  if (existing) {
+    senders[senders.findIndex(s => s.id === existing.id)] = sender;
+  } else {
+    senders.push(sender);
+  }
+  writeDB(EMAIL_SENDERS_FILE, senders);
+  res.json({ ok: true, sender: publicSender(sender) });
+});
+
+app.delete('/api/email/senders/:id', (req, res) => {
+  const senders = readDB(EMAIL_SENDERS_FILE).filter(s => s.id !== req.params.id);
+  writeDB(EMAIL_SENDERS_FILE, senders);
+  res.json({ ok: true, total: senders.length });
+});
+
+// Verify SMTP credentials, and optionally send a real test email.
+app.post('/api/email/senders/:id/test', async (req, res) => {
+  const sender = readDB(EMAIL_SENDERS_FILE).find(s => s.id === req.params.id);
+  if (!sender) return res.status(404).json({ error: 'Sender not found.' });
+
+  const to = String(req.body?.to || '').trim();
+  let transport;
+  try {
+    transport = buildTransport(sender);
+  } catch (err) {
+    return res.status(501).json({ error: err.message, code: err.code });
+  }
+
+  try {
+    await transport.verify();
+  } catch (err) {
+    transport.close();
+    return res.status(400).json({
+      ok: false,
+      error: `SMTP login failed: ${err.message}. Check the host, port, username and app password.`,
+    });
+  }
+
+  if (!to) {
+    transport.close();
+    return res.json({ ok: true, verified: true, message: 'SMTP connection and login work.' });
+  }
+  if (!isEmail(to)) {
+    transport.close();
+    return res.status(400).json({ error: 'Test recipient must be a valid email address.' });
+  }
+
+  try {
+    const info = await transport.sendMail({
+      from: sender.fromName ? `"${sender.fromName}" <${sender.fromEmail}>` : sender.fromEmail,
+      to,
+      ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
+      subject: 'QuickAds test email',
+      text: 'This is a test email from your QuickAds outreach tool. If you can read this, sending works.',
+    });
+    res.json({ ok: true, verified: true, messageId: info.messageId, message: `Test email sent to ${to}.` });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: `Could not send the test email: ${err.message}` });
+  } finally {
+    transport.close();
+  }
+});
+
+// ── Contacts ───────────────────────────────────────────────
+
+function slugKey(s) {
+  return String(s).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+const CONTACT_ALIASES = {
+  email: ['email', 'e_mail', 'email_address', 'mail', 'email_id', 'work_email', 'contact_email'],
+  fullName: ['full_name', 'fullname', 'name', 'contact_name', 'display_name'],
+  firstName: ['first_name', 'firstname', 'fname', 'given_name', 'first'],
+  lastName: ['last_name', 'lastname', 'lname', 'surname', 'family_name', 'last'],
+  company: ['company', 'brand', 'organization', 'organisation', 'company_name', 'business'],
+  username: ['username', 'handle', 'instagram', 'ig', 'instagram_handle', 'profile', 'account'],
+};
+
+function mapContactKey(key) {
+  const slug = slugKey(key);
+  for (const [field, aliases] of Object.entries(CONTACT_ALIASES)) {
+    if (aliases.includes(slug)) return field;
+  }
+  return null;
+}
+
+// Read the first sheet of an .xlsx/.xls/.csv buffer into row objects.
+function parseSheetBuffer(buf) {
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) return [];
+  return XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
+}
+
+// Turn one spreadsheet row into a contact. Unknown columns are kept in
+// `custom` so they can be used as {{variables}} in templates.
+function normalizeContact(row) {
+  if (!row || typeof row !== 'object') return null;
+  const rec = { custom: {} };
+  for (const [rawKey, rawVal] of Object.entries(row)) {
+    const val = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
+    if (val === '' || val === null || val === undefined) continue;
+    const field = mapContactKey(rawKey);
+    if (field) {
+      if (!rec[field]) rec[field] = String(val).trim();
+    } else {
+      const slug = slugKey(rawKey);
+      if (slug) rec.custom[slug] = String(val).trim();
+    }
+  }
+
+  const email = String(rec.email || '').trim().toLowerCase();
+  if (!isEmail(email)) return null;
+
+  const fullName = rec.fullName || [rec.firstName, rec.lastName].filter(Boolean).join(' ').trim();
+  const firstName = rec.firstName || extractFirstName(fullName, rec.username || email.split('@')[0]);
+
+  return {
+    id: genId(),
+    email,
+    firstName: firstName || '',
+    lastName: rec.lastName || '',
+    fullName: fullName || '',
+    company: rec.company || '',
+    username: String(rec.username || '').replace(/^@/, ''),
+    custom: rec.custom,
+    unsubscribed: false,
+    addedAt: new Date().toISOString(),
+  };
+}
+
+app.get('/api/email/contacts', (req, res) => {
+  res.json(readDB(EMAIL_CONTACTS_FILE));
+});
+
+// Import a contact sheet. Body: { filename, dataBase64 } for an uploaded
+// .xlsx/.csv file, or { contacts: [...] } for rows built on the client.
+app.post('/api/email/contacts/import', (req, res) => {
+  const { filename, dataBase64, contacts } = req.body || {};
+
+  let rows;
+  if (dataBase64) {
+    try {
+      rows = parseSheetBuffer(Buffer.from(String(dataBase64), 'base64'));
+    } catch (err) {
+      return res.status(400).json({ error: `Could not read "${filename || 'the file'}": ${err.message}` });
+    }
+  } else if (Array.isArray(contacts)) {
+    rows = contacts;
+  } else {
+    return res.status(400).json({ error: 'Upload a .csv or .xlsx file, or send a contacts array.' });
+  }
+
+  if (!rows.length) {
+    return res.status(400).json({ error: 'That sheet has no rows.' });
+  }
+
+  const cleaned = rows.map(normalizeContact).filter(Boolean);
+  const invalid = rows.length - cleaned.length;
+  if (!cleaned.length) {
+    const cols = Object.keys(rows[0] || {}).join(', ') || '(none)';
+    return res.status(400).json({
+      error: `No valid email addresses found. Make sure one column is named "Email". Columns seen: ${cols}`,
+    });
+  }
+
+  const existing = readDB(EMAIL_CONTACTS_FILE);
+  const byEmail = new Map(existing.map(c => [c.email, c]));
+  let added = 0, updated = 0;
+
+  for (const c of cleaned) {
+    const prev = byEmail.get(c.email);
+    if (prev) {
+      byEmail.set(c.email, {
+        ...prev,
+        firstName: c.firstName || prev.firstName,
+        lastName: c.lastName || prev.lastName,
+        fullName: c.fullName || prev.fullName,
+        company: c.company || prev.company,
+        username: c.username || prev.username,
+        custom: { ...prev.custom, ...c.custom },
+      });
+      updated++;
+    } else {
+      byEmail.set(c.email, c);
+      added++;
+    }
+  }
+
+  const all = Array.from(byEmail.values());
+  writeDB(EMAIL_CONTACTS_FILE, all);
+  res.json({ ok: true, added, updated, invalid, total: all.length, contacts: all });
+});
+
+app.patch('/api/email/contacts/:id', (req, res) => {
+  const contacts = readDB(EMAIL_CONTACTS_FILE);
+  const c = contacts.find(x => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contact not found.' });
+  if (req.body?.unsubscribed !== undefined) c.unsubscribed = !!req.body.unsubscribed;
+  writeDB(EMAIL_CONTACTS_FILE, contacts);
+  res.json({ ok: true, contact: c });
+});
+
+app.delete('/api/email/contacts/:id', (req, res) => {
+  const contacts = readDB(EMAIL_CONTACTS_FILE).filter(c => c.id !== req.params.id);
+  writeDB(EMAIL_CONTACTS_FILE, contacts);
+  res.json({ ok: true, total: contacts.length });
+});
+
+app.delete('/api/email/contacts', (req, res) => {
+  writeDB(EMAIL_CONTACTS_FILE, []);
+  res.json({ ok: true, total: 0 });
+});
+
+// ── Templates ──────────────────────────────────────────────
+
+function normalizeTemplate(raw, existing) {
+  raw = raw || {};
+  const prev = existing || {};
+  return {
+    id: prev.id || genId(),
+    name: String(raw.name ?? prev.name ?? '').trim() || 'Untitled template',
+    subject: String(raw.subject ?? prev.subject ?? '').trim(),
+    body: String(raw.body ?? prev.body ?? ''),
+    createdAt: prev.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+// Variables available inside a subject/body for a given contact.
+function emailTemplateContext(contact) {
+  const first = contact.firstName || extractFirstName(contact.fullName, contact.username || contact.email.split('@')[0]);
+  return {
+    first_name: first,
+    firstname: first,
+    last_name: contact.lastName || '',
+    full_name: contact.fullName || first,
+    name: contact.fullName || first,
+    email: contact.email,
+    company: contact.company || '',
+    brand: contact.company || '',
+    username: contact.username || '',
+    handle: contact.username ? '@' + contact.username : '',
+    ...(contact.custom || {}),
+  };
+}
+
+app.get('/api/email/templates', (req, res) => {
+  res.json(readDB(EMAIL_TEMPLATES_FILE));
+});
+
+app.post('/api/email/templates', (req, res) => {
+  const templates = readDB(EMAIL_TEMPLATES_FILE);
+  const existing = req.body?.id ? templates.find(t => t.id === req.body.id) : null;
+  const tpl = normalizeTemplate(req.body, existing);
+
+  if (!tpl.subject) return res.status(400).json({ error: 'Subject is required.' });
+  if (!tpl.body.trim()) return res.status(400).json({ error: 'Message body is required.' });
+
+  if (existing) templates[templates.findIndex(t => t.id === existing.id)] = tpl;
+  else templates.push(tpl);
+
+  writeDB(EMAIL_TEMPLATES_FILE, templates);
+  res.json({ ok: true, template: tpl });
+});
+
+app.delete('/api/email/templates/:id', (req, res) => {
+  const templates = readDB(EMAIL_TEMPLATES_FILE).filter(t => t.id !== req.params.id);
+  writeDB(EMAIL_TEMPLATES_FILE, templates);
+  res.json({ ok: true, total: templates.length });
+});
+
+// Render a template against a real contact (or a sample) for preview.
+app.post('/api/email/templates/preview', (req, res) => {
+  const { subject, body, contactId } = req.body || {};
+  const contacts = readDB(EMAIL_CONTACTS_FILE);
+  const contact = (contactId && contacts.find(c => c.id === contactId)) || contacts[0] || {
+    email: 'alex@example.com', firstName: 'Alex', fullName: 'Alex Morgan',
+    company: 'Example Co', username: 'alexcreator', custom: {},
+  };
+  const ctx = emailTemplateContext(contact);
+  res.json({
+    to: contact.email,
+    subject: renderTemplate(subject || '', ctx),
+    body: renderTemplate(body || '', ctx),
+    variables: Object.keys(ctx),
+  });
+});
+
+// ── Campaigns + send engine ────────────────────────────────
+
+// In-memory handles for running campaigns; progress is mirrored to disk so it
+// survives a restart mid-send.
+const emailJobs = new Map();
+
+function saveCampaign(campaign) {
+  const all = readDB(EMAIL_CAMPAIGNS_FILE);
+  const idx = all.findIndex(c => c.id === campaign.id);
+  if (idx === -1) all.push(campaign); else all[idx] = campaign;
+  writeDB(EMAIL_CAMPAIGNS_FILE, all);
+}
+
+function campaignLog(campaign, type, msg) {
+  campaign.log = campaign.log || [];
+  campaign.log.push({ at: new Date().toISOString(), type, msg });
+  if (campaign.log.length > 500) campaign.log = campaign.log.slice(-500);
+}
+
+function recordSend(entry) {
+  const all = readDB(EMAIL_SENDS_FILE);
+  all.push(entry);
+  writeDB(EMAIL_SENDS_FILE, all);
+  return entry;
+}
+
+// Text body → simple HTML so line breaks and links survive in mail clients.
+function textToHtml(text) {
+  const esc = String(text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const linked = esc.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>');
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.6;color:#222;">${linked.replace(/\n/g, '<br>')}</div>`;
+}
+
+function selectAudience(campaign, contacts, sends) {
+  let list = contacts.filter(c => !c.unsubscribed);
+  if (Array.isArray(campaign.contactIds) && campaign.contactIds.length) {
+    const wanted = new Set(campaign.contactIds);
+    list = list.filter(c => wanted.has(c.id));
+  }
+  if (campaign.audience === 'new') {
+    const everSent = new Set(sends.filter(s => s.status === 'sent').map(s => s.email));
+    list = list.filter(c => !everSent.has(c.email));
+  }
+  return list;
+}
+
+async function runEmailCampaign(campaignId) {
+  const job = emailJobs.get(campaignId);
+  const campaigns = readDB(EMAIL_CAMPAIGNS_FILE);
+  const campaign = campaigns.find(c => c.id === campaignId);
+  if (!campaign) return;
+
+  const finish = (status, msg) => {
+    campaign.status = status;
+    campaign.finishedAt = new Date().toISOString();
+    if (msg) campaignLog(campaign, status === 'failed' ? 'error' : 'info', msg);
+    saveCampaign(campaign);
+    emailJobs.delete(campaignId);
+  };
+
+  let transport;
+  try {
+    const sender = readDB(EMAIL_SENDERS_FILE).find(s => s.id === campaign.senderId);
+    if (!sender) return finish('failed', 'The sending email account was not found.');
+
+    const template = readDB(EMAIL_TEMPLATES_FILE).find(t => t.id === campaign.templateId);
+    if (!template) return finish('failed', 'The email template was not found.');
+
+    const contacts = readDB(EMAIL_CONTACTS_FILE);
+    const allSends = readDB(EMAIL_SENDS_FILE);
+    const audience = selectAudience(campaign, contacts, allSends);
+
+    // Already handled in this campaign (so a resumed run doesn't double-send).
+    const doneEmails = new Set(
+      allSends.filter(s => s.campaignId === campaignId && s.status === 'sent').map(s => s.email)
+    );
+
+    campaign.total = audience.length;
+    campaign.status = 'running';
+    campaign.startedAt = campaign.startedAt || new Date().toISOString();
+    campaignLog(campaign, 'info', `Starting: ${audience.length} recipient(s) from ${sender.fromEmail}.`);
+    saveCampaign(campaign);
+
+    try {
+      transport = buildTransport(sender);
+    } catch (err) {
+      return finish('failed', err.message);
+    }
+
+    try {
+      await transport.verify();
+    } catch (err) {
+      return finish('failed', `SMTP login failed: ${err.message}`);
+    }
+
+    const fromHeader = sender.fromName
+      ? `"${sender.fromName}" <${sender.fromEmail}>`
+      : sender.fromEmail;
+    const parsedDelay = Number(campaign.delayMs);
+    const delay = Number.isFinite(parsedDelay) ? Math.max(0, parsedDelay) : 0;
+
+    // Wait between emails, but stay responsive to "Stop" instead of sleeping
+    // through the whole gap.
+    const pause = async (ms) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until) {
+        if (job?.stopped) return;
+        await new Promise(r => setTimeout(r, Math.min(500, until - Date.now())));
+      }
+    };
+
+    for (let i = 0; i < audience.length; i++) {
+      const contact = audience[i];
+      if (job?.stopped) {
+        return finish('stopped', `Stopped by user after ${campaign.sent} sent.`);
+      }
+      if (doneEmails.has(contact.email)) {
+        campaign.skipped++;
+        continue;
+      }
+
+      const ctx = emailTemplateContext(contact);
+      const subject = renderTemplate(template.subject, ctx);
+      const body = renderTemplate(template.body, ctx);
+      const base = {
+        id: genId(),
+        campaignId,
+        campaignName: campaign.name,
+        contactId: contact.id,
+        email: contact.email,
+        firstName: contact.firstName || '',
+        fullName: contact.fullName || '',
+        subject,
+        body,
+        from: sender.fromEmail,
+        at: new Date().toISOString(),
+      };
+
+      try {
+        const info = await transport.sendMail({
+          from: fromHeader,
+          to: contact.email,
+          ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
+          subject,
+          text: body,
+          html: textToHtml(body),
+        });
+        campaign.sent++;
+        recordSend({ ...base, status: 'sent', messageId: info.messageId || null, error: null });
+        campaignLog(campaign, 'sent', `Sent to ${contact.email}`);
+      } catch (err) {
+        campaign.failed++;
+        recordSend({ ...base, status: 'failed', messageId: null, error: err.message });
+        campaignLog(campaign, 'error', `Failed ${contact.email}: ${err.message}`);
+      }
+
+      campaign.processed = campaign.sent + campaign.failed + campaign.skipped;
+      saveCampaign(campaign);
+
+      // Only pause *between* emails — never after the last one.
+      if (delay && i < audience.length - 1) await pause(delay);
+    }
+
+    finish('completed', `Done. ${campaign.sent} sent, ${campaign.failed} failed, ${campaign.skipped} skipped.`);
+  } catch (err) {
+    console.error('email campaign error:', err);
+    finish('failed', `Unexpected error: ${err.message}`);
+  } finally {
+    try { if (transport) transport.close(); } catch (_) {}
+  }
+}
+
+app.get('/api/email/campaigns', (req, res) => {
+  const all = readDB(EMAIL_CAMPAIGNS_FILE)
+    .slice()
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(c => ({ ...c, log: undefined }));
+  res.json(all);
+});
+
+app.get('/api/email/campaigns/:id', (req, res) => {
+  const campaign = readDB(EMAIL_CAMPAIGNS_FILE).find(c => c.id === req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campaign not found.' });
+  res.json(campaign);
+});
+
+app.post('/api/email/campaigns', (req, res) => {
+  const { name, senderId, templateId, audience, contactIds, delayMs, start } = req.body || {};
+
+  const sender = readDB(EMAIL_SENDERS_FILE).find(s => s.id === senderId);
+  if (!sender) return res.status(400).json({ error: 'Pick which email address to send from.' });
+  const template = readDB(EMAIL_TEMPLATES_FILE).find(t => t.id === templateId);
+  if (!template) return res.status(400).json({ error: 'Pick an email template.' });
+
+  const contacts = readDB(EMAIL_CONTACTS_FILE);
+  const sends = readDB(EMAIL_SENDS_FILE);
+
+  const campaign = {
+    id: genId(),
+    name: String(name || '').trim() || `Outreach ${new Date().toLocaleDateString()}`,
+    senderId,
+    senderEmail: sender.fromEmail,
+    templateId,
+    templateName: template.name,
+    audience: audience === 'new' ? 'new' : 'all',
+    contactIds: Array.isArray(contactIds) && contactIds.length ? contactIds : null,
+    // Note: `Number(delayMs) || 10000` would turn a deliberate 0 into 10s.
+    delayMs: (() => {
+      const n = Number(delayMs);
+      return Number.isFinite(n) ? Math.min(600000, Math.max(0, n)) : 10000;
+    })(),
+    status: 'draft',
+    total: 0,
+    processed: 0,
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    log: [],
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+  };
+
+  campaign.total = selectAudience(campaign, contacts, sends).length;
+  if (!campaign.total) {
+    return res.status(400).json({ error: 'No recipients match this campaign. Import contacts first, or switch the audience to "everyone".' });
+  }
+
+  saveCampaign(campaign);
+
+  if (start !== false) {
+    emailJobs.set(campaign.id, { stopped: false });
+    setImmediate(() => runEmailCampaign(campaign.id));
+  }
+
+  res.json({ ok: true, campaign });
+});
+
+app.post('/api/email/campaigns/:id/start', (req, res) => {
+  const campaign = readDB(EMAIL_CAMPAIGNS_FILE).find(c => c.id === req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campaign not found.' });
+  if (campaign.status === 'running') return res.status(400).json({ error: 'This campaign is already running.' });
+
+  emailJobs.set(campaign.id, { stopped: false });
+  setImmediate(() => runEmailCampaign(campaign.id));
+  res.json({ ok: true });
+});
+
+app.post('/api/email/campaigns/:id/stop', (req, res) => {
+  const job = emailJobs.get(req.params.id);
+  if (!job) return res.status(400).json({ error: 'That campaign is not running.' });
+  job.stopped = true;
+  res.json({ ok: true, message: 'Stopping after the current email…' });
+});
+
+app.delete('/api/email/campaigns/:id', (req, res) => {
+  const all = readDB(EMAIL_CAMPAIGNS_FILE).filter(c => c.id !== req.params.id);
+  writeDB(EMAIL_CAMPAIGNS_FILE, all);
+  res.json({ ok: true, total: all.length });
+});
+
+// ── Results ────────────────────────────────────────────────
+
+app.get('/api/email/sends', (req, res) => {
+  let sends = readDB(EMAIL_SENDS_FILE);
+  const { campaignId, status, limit } = req.query;
+  if (campaignId) sends = sends.filter(s => s.campaignId === campaignId);
+  if (status) sends = sends.filter(s => s.status === status);
+  sends = sends.slice().reverse();
+  const max = Math.min(5000, Number(limit) || 500);
+  res.json({ total: sends.length, sends: sends.slice(0, max) });
+});
+
+app.get('/api/email/sends/export', (req, res) => {
+  let sends = readDB(EMAIL_SENDS_FILE);
+  if (req.query.campaignId) sends = sends.filter(s => s.campaignId === req.query.campaignId);
+
+  const headers = ['Date', 'Campaign', 'Email', 'First Name', 'Full Name', 'From', 'Subject', 'Status', 'Error'];
+  const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = sends.map(s => [
+    s.at, s.campaignName, s.email, s.firstName, s.fullName, s.from, s.subject, s.status, s.error || '',
+  ].map(esc).join(','));
+
+  const csv = headers.map(esc).join(',') + '\n' + rows.join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename=email-results.csv');
+  res.send(csv);
+});
+
+app.get('/api/email/stats', (req, res) => {
+  const sends = readDB(EMAIL_SENDS_FILE);
+  const contacts = readDB(EMAIL_CONTACTS_FILE);
+  res.json({
+    contacts: contacts.length,
+    unsubscribed: contacts.filter(c => c.unsubscribed).length,
+    campaigns: readDB(EMAIL_CAMPAIGNS_FILE).length,
+    templates: readDB(EMAIL_TEMPLATES_FILE).length,
+    senders: readDB(EMAIL_SENDERS_FILE).length,
+    sent: sends.filter(s => s.status === 'sent').length,
+    failed: sends.filter(s => s.status === 'failed').length,
+    reached: new Set(sends.filter(s => s.status === 'sent').map(s => s.email)).size,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
 //  Page Routes
 // ═══════════════════════════════════════════════════════════
+
+app.get('/email', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'email.html'));
+});
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

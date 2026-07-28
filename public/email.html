@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Email Outreach — InfluencerFind</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="negotiate.css" />
+  <style>
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:24px; }
+    .tab {
+      padding:10px 18px; border-radius:10px; cursor:pointer; font-size:14px; font-weight:600;
+      background:var(--bg-card); border:1px solid var(--border); color:var(--text-muted);
+      display:flex; align-items:center; gap:8px;
+    }
+    .tab:hover { background:var(--bg-card-hover); color:var(--text); }
+    .tab.active { background:rgba(195,245,60,0.12); border-color:rgba(195,245,60,0.35); color:var(--accent); }
+    .tab-count { font-size:11px; background:rgba(255,255,255,0.08); border-radius:20px; padding:1px 8px; }
+    .pane { display:none; }
+    .pane.active { display:block; }
+    .step-num {
+      display:inline-flex; align-items:center; justify-content:center;
+      width:22px; height:22px; border-radius:50%; background:var(--accent);
+      color:var(--accent-ink); font-size:12px; font-weight:800; margin-right:8px; flex:none;
+    }
+    .var-chip {
+      display:inline-block; padding:3px 9px; margin:3px 4px 0 0; border-radius:6px; cursor:pointer;
+      background:var(--bg-input); border:1px solid var(--border); font-size:12px; font-family:monospace;
+      color:var(--text-muted);
+    }
+    .var-chip:hover { border-color:var(--accent); color:var(--accent); }
+    .preview-box {
+      background:var(--bg-input); border:1px solid var(--border); border-radius:10px;
+      padding:14px; font-size:14px; line-height:1.6; white-space:pre-wrap; min-height:120px;
+    }
+    .row-item {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding:12px 14px; border:1px solid var(--border); border-radius:10px; margin-bottom:10px;
+      background:var(--bg-card);
+    }
+    .row-item-main { min-width:0; }
+    .row-item-title { font-weight:600; font-size:14px; }
+    .row-item-sub { font-size:12px; color:var(--text-muted); margin-top:2px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .muted { color:var(--text-muted); font-size:13px; }
+    .hint-box {
+      background:rgba(195,245,60,0.06); border:1px solid rgba(195,245,60,0.15);
+      border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.6; margin-bottom:16px;
+    }
+  </style>
+</head>
+<body>
+  <!-- ─── Navbar ──────────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <a href="/" class="nav-brand">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c3f53c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <span>InfluencerFind</span>
+      </a>
+      <div class="nav-links">
+        <a href="/" class="nav-link">Discovery</a>
+        <a href="/negotiate" class="nav-link">Negotiate</a>
+        <a href="/email" class="nav-link active">Email Outreach</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="page-header">
+      <h1 class="gradient-text">Email Outreach</h1>
+      <p class="page-sub">Upload your contact sheet, write one message, and send it personalized to everyone — from your own email address.</p>
+    </div>
+
+    <!-- ─── Stats ────────────────────────────────────── -->
+    <div class="stats-row" style="margin-bottom:24px;">
+      <div class="stat-card"><span class="stat-value" id="statContacts">0</span><span class="stat-label">Contacts</span></div>
+      <div class="stat-card"><span class="stat-value" id="statSent">0</span><span class="stat-label">Emails sent</span></div>
+      <div class="stat-card"><span class="stat-value stat-rejected" id="statFailed">0</span><span class="stat-label">Failed</span></div>
+      <div class="stat-card"><span class="stat-value" id="statCampaigns">0</span><span class="stat-label">Campaigns</span></div>
+    </div>
+
+    <!-- ─── Tabs ─────────────────────────────────────── -->
+    <div class="tabs">
+      <div class="tab active" data-pane="paneSender"><span class="step-num">1</span>Send From</div>
+      <div class="tab" data-pane="paneContacts"><span class="step-num">2</span>Contacts <span class="tab-count" id="tabContactCount">0</span></div>
+      <div class="tab" data-pane="paneTemplate"><span class="step-num">3</span>Message</div>
+      <div class="tab" data-pane="paneSend"><span class="step-num">4</span>Send</div>
+      <div class="tab" data-pane="paneResults">Results</div>
+    </div>
+
+    <!-- ═══ 1. SENDER ═════════════════════════════════ -->
+    <div id="paneSender" class="pane active">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-icon">📤</div>
+          <div>
+            <h2>Which email should we send from?</h2>
+            <p class="card-subtitle">Connect the mailbox you want your outreach to come from.</p>
+          </div>
+        </div>
+
+        <div class="hint-box">
+          <b>Using Gmail?</b> You need an <b>App Password</b> (not your normal password):
+          go to <b>myaccount.google.com → Security → 2-Step Verification → App passwords</b>,
+          create one, and paste the 16-character code below.
+        </div>
+
+        <div id="senderList"></div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label for="sProvider">Email provider</label>
+            <select id="sProvider"></select>
+            <span class="form-hint" id="sProviderHint"></span>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="sFromEmail">Your email address <span class="required">*</span></label>
+            <input type="email" id="sFromEmail" placeholder="you@yourbrand.com" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label for="sFromName">Your name (shown to recipients)</label>
+            <input type="text" id="sFromName" placeholder="Priya from QuickAds" />
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="sPass">Password / app password <span class="required">*</span></label>
+            <input type="password" id="sPass" placeholder="••••••••••••" autocomplete="new-password" />
+          </div>
+        </div>
+
+        <details id="advancedDetails" style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);">Advanced settings (host, port, username, reply-to)</summary>
+          <div class="form-row" style="margin-top:12px;">
+            <div class="form-group" style="flex:1.4;"><label for="sHost">SMTP host</label><input type="text" id="sHost" /></div>
+            <div class="form-group" style="flex:0.6;"><label for="sPort">Port</label><input type="number" id="sPort" /></div>
+            <div class="form-group" style="flex:1;"><label for="sUser">Username</label><input type="text" id="sUser" placeholder="defaults to your email" /></div>
+            <div class="form-group" style="flex:1;"><label for="sReplyTo">Reply-to</label><input type="email" id="sReplyTo" placeholder="optional" /></div>
+          </div>
+        </details>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button id="btnSaveSender" class="btn btn-primary">Save email account</button>
+          <span id="senderMsg" class="muted"></span>
+        </div>
+      </section>
+    </div>
+
+    <!-- ═══ 2. CONTACTS ═══════════════════════════════ -->
+    <div id="paneContacts" class="pane">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-icon">📇</div>
+          <div>
+            <h2>Upload your contact sheet</h2>
+            <p class="card-subtitle">Excel (.xlsx) or CSV. We read the column names automatically.</p>
+          </div>
+        </div>
+
+        <div class="hint-box">
+          Your sheet should have a column for <b>Email</b> (required), plus
+          <b>Full Name</b> and <b>First Name</b> if you have them. Any other columns
+          (Company, Brand, City…) become variables you can use in your message.
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+          <input type="file" id="contactFile" accept=".csv,.xlsx,.xls,text/csv" style="display:none;" />
+          <button id="btnUpload" class="btn btn-primary">⬆ Upload sheet</button>
+          <button id="btnSampleCsv" class="btn btn-outline" type="button">Download sample sheet</button>
+          <button id="btnClearContacts" class="btn btn-outline" type="button">Remove all</button>
+          <span id="uploadMsg" class="muted"></span>
+        </div>
+
+        <div id="contactsEmpty" class="empty-state" style="padding:40px 20px;">
+          <p>No contacts yet. Upload a sheet to get started.</p>
+        </div>
+        <div class="table-wrapper" id="contactsWrap" style="display:none;">
+          <table class="results-table">
+            <thead>
+              <tr><th>#</th><th>Email</th><th>First Name</th><th>Full Name</th><th>Company</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody id="contactsBody"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="contactsMore" style="margin-top:10px;"></p>
+      </section>
+    </div>
+
+    <!-- ═══ 3. TEMPLATE ═══════════════════════════════ -->
+    <div id="paneTemplate" class="pane">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-icon purple">✉️</div>
+          <div>
+            <h2>Write your message</h2>
+            <p class="card-subtitle">Click a variable to insert it — each person gets their own details filled in.</p>
+          </div>
+        </div>
+
+        <div id="templateList"></div>
+
+        <div class="form-group">
+          <label for="tName">Template name</label>
+          <input type="text" id="tName" placeholder="e.g. First outreach" />
+        </div>
+        <div class="form-group">
+          <label for="tSubject">Subject line <span class="required">*</span></label>
+          <input type="text" id="tSubject" placeholder="Quick collab idea for {{first_name}}" />
+        </div>
+        <div class="form-group">
+          <label for="tBody">Message <span class="required">*</span></label>
+          <textarea id="tBody" rows="10" placeholder="Hi {{first_name}},&#10;&#10;I came across your work and loved it..."></textarea>
+          <div id="varChips" style="margin-top:8px;"></div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+          <button id="btnSaveTemplate" class="btn btn-primary">Save template</button>
+          <button id="btnPreview" class="btn btn-outline" type="button">Refresh preview</button>
+          <span id="templateMsg" class="muted"></span>
+        </div>
+
+        <label class="muted" style="display:block;margin-bottom:6px;">Preview (using your first contact)</label>
+        <div class="preview-box">
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">
+            To: <span id="pvTo">—</span><br>Subject: <b id="pvSubject">—</b>
+          </div>
+          <div id="pvBody">—</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ═══ 4. SEND ═══════════════════════════════════ -->
+    <div id="paneSend" class="pane">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-icon">🚀</div>
+          <div>
+            <h2>Send your campaign</h2>
+            <p class="card-subtitle">Double-check everything, then start. You can stop at any time.</p>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label for="cName">Campaign name</label>
+            <input type="text" id="cName" placeholder="e.g. Fitness creators — July" />
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="cSender">Send from</label>
+            <select id="cSender"></select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label for="cTemplate">Message template</label>
+            <select id="cTemplate"></select>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="cAudience">Who to email</label>
+            <select id="cAudience">
+              <option value="new">Only people never emailed before</option>
+              <option value="all">Everyone in my contacts</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="cDelay">Wait between emails</label>
+            <select id="cDelay">
+              <option value="5000">5 seconds</option>
+              <option value="10000" selected>10 seconds (recommended)</option>
+              <option value="30000">30 seconds</option>
+              <option value="60000">1 minute (safest)</option>
+              <option value="0">No delay (risky)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="hint-box">
+          <b>Heads up:</b> Gmail allows roughly 500 emails a day (2,000 on Workspace).
+          Sending too fast can get your account flagged — 10 seconds between emails is a safe pace.
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button id="btnStartCampaign" class="btn btn-primary btn-lg">Start sending</button>
+          <span id="sendMsg" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="card" id="liveCard" style="display:none;">
+        <div class="card-header">
+          <div class="card-icon">📡</div>
+          <div>
+            <h2 id="liveTitle">Sending…</h2>
+            <p class="card-subtitle" id="liveSub"></p>
+          </div>
+        </div>
+        <div class="progress-bar"><div id="liveProgress" class="progress-fill" style="width:0%"></div></div>
+        <div class="stats-row" style="margin:14px 0;">
+          <div class="stat-card"><span class="stat-value" id="liveSent">0</span><span class="stat-label">Sent</span></div>
+          <div class="stat-card"><span class="stat-value stat-rejected" id="liveFailed">0</span><span class="stat-label">Failed</span></div>
+          <div class="stat-card"><span class="stat-value stat-negotiating" id="liveSkipped">0</span><span class="stat-label">Skipped</span></div>
+          <div class="stat-card"><span class="stat-value" id="liveTotal">0</span><span class="stat-label">Total</span></div>
+        </div>
+        <div id="liveLog" class="autopilot-log" style="display:block;max-height:240px;"></div>
+        <div style="margin-top:12px;">
+          <button id="btnStopCampaign" class="btn btn-outline">Stop sending</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ═══ 5. RESULTS ════════════════════════════════ -->
+    <div id="paneResults" class="pane">
+      <section class="card">
+        <div class="results-header">
+          <div class="results-title">
+            <h2>Campaigns</h2>
+            <p class="card-subtitle">Every campaign and its outcome, saved permanently.</p>
+          </div>
+          <div class="results-actions">
+            <a href="/api/email/sends/export" class="btn btn-outline" download>Export all results (CSV)</a>
+          </div>
+        </div>
+        <div id="campaignList"></div>
+      </section>
+
+      <section class="card">
+        <div class="results-header">
+          <div class="results-title">
+            <h2>Every email sent</h2>
+            <p class="card-subtitle" id="sendsSub">All delivery results</p>
+          </div>
+          <div class="results-actions">
+            <select id="filterStatus" style="max-width:180px;">
+              <option value="">All statuses</option>
+              <option value="sent">Sent only</option>
+              <option value="failed">Failed only</option>
+            </select>
+          </div>
+        </div>
+        <div id="sendsEmpty" class="empty-state" style="padding:40px 20px;">
+          <p>Nothing sent yet.</p>
+        </div>
+        <div class="table-wrapper" id="sendsWrap" style="display:none;">
+          <table class="results-table">
+            <thead>
+              <tr><th>When</th><th>Email</th><th>Campaign</th><th>Subject</th><th>Status</th><th>Detail</th></tr>
+            </thead>
+            <tbody id="sendsBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"><span id="toastMessage">Done!</span></div>
+  <script src="email.js"></script>
+</body>
+</html>
