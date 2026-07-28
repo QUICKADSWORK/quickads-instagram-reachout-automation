@@ -1,0 +1,35 @@
+{
+  "title": "Instagram Cookie Login",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "username": {
+      "title": "Instagram username or email",
+      "type": "string",
+      "description": "The account to log in as.",
+      "editor": "textfield"
+    },
+    "password": {
+      "title": "Password",
+      "type": "string",
+      "description": "The account password.",
+      "editor": "textfield",
+      "isSecret": true
+    },
+    "code": {
+      "title": "2FA code (optional)",
+      "type": "string",
+      "description": "6-digit code, only if the account has two-factor auth enabled.",
+      "editor": "textfield"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy",
+      "type": "object",
+      "description": "Route the login through an Apify proxy. RESIDENTIAL is strongly recommended — Instagram often blocks logins from datacenter IPs. Residential proxy is a paid Apify add-on.",
+      "editor": "proxy",
+      "default": { "useApifyProxy": true },
+      "prefill": { "useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"] }
+    }
+  },
+  "required": ["username", "password"]
+}

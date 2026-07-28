@@ -1,0 +1,17 @@
+{
+  "actorSpecification": 1,
+  "name": "instagram-cookie-login",
+  "title": "Instagram Cookie Login",
+  "description": "Logs into Instagram with username/password (+ optional 2FA) and returns the session cookies (sessionid, ds_user_id, csrftoken).",
+  "version": "0.1",
+  "buildTag": "latest",
+  "input": "./input_schema.json",
+  "dockerfile": "../Dockerfile",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "Session cookies",
+      "views": {}
+    }
+  }
+}

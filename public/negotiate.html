@@ -345,85 +345,45 @@
         <h3 style="margin:0 0 6px;font-size:15px;">Connect Instagram</h3>
         <div id="connectStatus" class="cookie-status" style="margin-bottom:14px;"></div>
 
-        <!-- Method 1: Browser extension (auto) -->
-        <div class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <div style="font-weight:600;margin-bottom:4px;">🧩 Browser Extension <span style="font-size:11px;color:var(--accent,#c3f53c);">recommended</span></div>
-          <p class="modal-hint" style="margin:0 0 10px;">Download &amp; install the QuickAds extension, generate a pairing code, then connect in one click while logged into Instagram.</p>
+        <p class="modal-hint" style="margin:0 0 14px;">Connect your Instagram so QuickAds can send DMs for you. Just 3 quick steps — about a minute, no coding needed.</p>
 
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-            <a href="/api/extension/download" class="btn btn-primary" download>⬇ Download Extension (.zip)</a>
-            <a href="#" id="toggleInstallSteps" class="modal-hint" style="margin:0;text-decoration:underline;">How to install</a>
-          </div>
+        <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <div style="font-weight:700;margin-bottom:6px;"><span style="background:var(--accent,#c3f53c);color:#0f1115;border-radius:50%;padding:1px 9px;margin-right:8px;">1</span>Add the QuickAds helper to your browser</div>
+          <p class="modal-hint" style="margin:0 0 10px;">Use Google Chrome or Microsoft Edge. Download the helper, then add it (one-time).</p>
+          <a href="/api/extension/download" class="btn btn-primary" download>⬇ Download helper</a>
+          <details style="margin-top:10px;">
+            <summary style="cursor:pointer;font-size:13px;">Show me how to add it (30 seconds)</summary>
+            <ol style="margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.7;">
+              <li>Unzip the file you just downloaded (right-click → Extract / Unzip).</li>
+              <li>Open a new browser tab and go to <b>chrome://extensions</b></li>
+              <li>Turn on <b>Developer mode</b> — the switch in the top-right corner.</li>
+              <li>Click <b>Load unpacked</b>, then choose the unzipped folder.</li>
+              <li>You'll now see "QuickAds — Instagram Connect" in your extensions. Done!</li>
+            </ol>
+          </details>
+        </div>
 
-          <ol id="installSteps" style="display:none;margin:0 0 12px;padding-left:18px;font-size:12px;color:var(--text-dim,#9aa);line-height:1.6;">
-            <li>Unzip the downloaded file.</li>
-            <li>Open <code>chrome://extensions</code> (or <code>edge://extensions</code>).</li>
-            <li>Turn on <b>Developer mode</b> (top-right).</li>
-            <li>Click <b>Load unpacked</b> and select the unzipped folder.</li>
-            <li>Make sure you're logged into Instagram, then use the code below.</li>
-          </ol>
+        <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <div style="font-weight:700;margin-bottom:6px;"><span style="background:var(--accent,#c3f53c);color:#0f1115;border-radius:50%;padding:1px 9px;margin-right:8px;">2</span>Log into Instagram</div>
+          <p class="modal-hint" style="margin:0;">In the same browser, open <a href="https://www.instagram.com" target="_blank" rel="noopener" style="color:var(--accent,#c3f53c);">instagram.com</a> and make sure you're logged into the account you want to use.</p>
+        </div>
 
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-            <button id="btnGenPair" class="btn btn-outline" type="button">Generate Pairing Code</button>
-            <code id="pairCode" style="font-size:18px;letter-spacing:2px;display:none;padding:4px 10px;background:rgba(0,0,0,0.3);border-radius:6px;"></code>
+        <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <div style="font-weight:700;margin-bottom:6px;"><span style="background:var(--accent,#c3f53c);color:#0f1115;border-radius:50%;padding:1px 9px;margin-right:8px;">3</span>Get your code and connect</div>
+          <p class="modal-hint" style="margin:0 0 10px;">Click <b>Get my code</b> below. Then click the QuickAds helper icon in your browser toolbar, enter the two things below, and press <b>Connect</b>.</p>
+          <div style="font-size:13px;margin-bottom:10px;">App address: <code id="appOrigin" style="padding:2px 8px;background:rgba(0,0,0,0.3);border-radius:6px;">this page's web address</code></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+            <button id="btnGenPair" class="btn btn-primary" type="button">Get my code</button>
+            <code id="pairCode" style="font-size:20px;letter-spacing:3px;display:none;padding:4px 12px;background:rgba(0,0,0,0.3);border-radius:6px;"></code>
             <span id="pairExpiry" class="modal-hint" style="margin:0;"></span>
           </div>
         </div>
 
-        <!-- Method 2: Apify login (runs on Apify, no server browser) -->
-        <div class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <div style="font-weight:600;margin-bottom:4px;">🔒 Log in via Apify <span style="font-size:11px;color:var(--accent,#c3f53c);">works on any host</span></div>
-          <p class="modal-hint" style="margin:0 0 10px;">Logs in through an Apify actor (on Apify's servers, with proxies) and stores the returned cookies — no browser needed on this server. Tries several login actors automatically and uses the first that works; some actors require renting on your Apify account. Uses your Apify credits. Enter a 2FA code only if your account asks for one.</p>
-          <div class="form-row">
-            <div class="form-group" style="flex:1;"><label for="fApifyUser">IG Username</label><input type="text" id="fApifyUser" placeholder="username" autocomplete="off" /></div>
-            <div class="form-group" style="flex:1;"><label for="fApifyPass">IG Password</label><input type="password" id="fApifyPass" placeholder="password" autocomplete="off" /></div>
-            <div class="form-group" style="flex:0.7;"><label for="fApifyCode">2FA code (optional)</label><input type="text" id="fApifyCode" placeholder="123456" autocomplete="off" /></div>
-          </div>
-          <button id="btnApifyLogin" class="btn btn-outline" type="button">Log In via Apify &amp; Connect</button>
-          <div id="apifyLoginResult" class="cookie-status" style="margin-top:8px;"></div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+          <button id="btnTestCookies" class="btn btn-outline" type="button">Check connection</button>
+          <span class="modal-hint" style="margin:0;">Confirm Instagram is connected.</span>
         </div>
 
-        <!-- Method 3: Local headless login (advanced / self-hosted) -->
-        <details class="connect-method" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <summary style="font-weight:600;cursor:pointer;">🔑 Local headless login (advanced)</summary>
-          <p class="modal-hint" style="margin:10px 0;">Runs Chromium <b>on this server</b> to log in. Needs Chromium + system libs (the Docker deploy) and only works for accounts <b>without</b> 2FA / login challenges. On most hosts, use "Log in via Apify" above instead.</p>
-          <div class="form-row">
-            <div class="form-group" style="flex:1;"><label for="fLoginUser">IG Username</label><input type="text" id="fLoginUser" placeholder="username" autocomplete="off" /></div>
-            <div class="form-group" style="flex:1;"><label for="fLoginPass">IG Password</label><input type="password" id="fLoginPass" placeholder="password" autocomplete="off" /></div>
-          </div>
-          <button id="btnHeadlessLogin" class="btn btn-outline" type="button">Log In &amp; Connect</button>
-          <div id="loginResult" class="cookie-status" style="margin-top:8px;"></div>
-        </details>
-
-        <details style="margin-bottom:6px;">
-          <summary style="cursor:pointer;font-weight:600;">📋 Paste cookies manually</summary>
-          <p class="modal-hint" style="margin:10px 0;">Paste your Instagram cookies (JSON array) here. These are needed to send DMs via the Apify automation actor. Required cookies: <code>sessionid</code>, <code>ds_user_id</code>, <code>csrftoken</code>.</p>
-        <div class="form-group">
-          <label for="fCookies">Instagram Cookies (JSON)</label>
-          <textarea id="fCookies" rows="8" placeholder='[{"name":"sessionid","value":"...","domain":".instagram.com",...}]'></textarea>
-        </div>
-        <div id="cookieStatus" class="cookie-status"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-          <button id="btnSaveCookies" class="btn btn-primary">Save Cookies</button>
-          <button id="btnTestCookies" class="btn btn-outline" type="button">Test Cookies (Inbox Check)</button>
-        </div>
-        </details>
-
-        <hr style="margin:18px 0;border:none;border-top:1px solid rgba(255,255,255,0.08);" />
-
-        <p class="modal-hint">Troubleshoot: send a real test DM to verify the Apify actor + cookies are working end-to-end.</p>
-        <div class="form-row">
-          <div class="form-group" style="flex:1;">
-            <label for="fTestUsername">Test Username</label>
-            <input type="text" id="fTestUsername" placeholder="your_other_account" />
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="fTestMessage">Test Message</label>
-          <textarea id="fTestMessage" rows="2" placeholder="Test DM from QuickAds — ignore."></textarea>
-        </div>
-        <button id="btnTestDM" class="btn btn-outline" type="button">Send Test DM</button>
-        <pre id="testDmResult" style="display:none;margin-top:12px;padding:10px;background:rgba(0,0,0,0.25);border-radius:8px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
       </div>
     </div>
   </div>

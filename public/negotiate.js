@@ -738,40 +738,13 @@
 
   $('#btnSettings').addEventListener('click', () => {
     $('#settingsOverlay').style.display = 'flex';
+    const origin = $('#appOrigin');
+    if (origin) origin.textContent = window.location.origin;
     checkCookies();
   });
 
   $('#settingsClose').addEventListener('click', () => {
     $('#settingsOverlay').style.display = 'none';
-  });
-
-  $('#btnSaveCookies').addEventListener('click', async () => {
-    const raw = $('#fCookies').value.trim();
-    if (!raw) { showToast('Paste cookies JSON'); return; }
-
-    let cookies;
-    try {
-      cookies = JSON.parse(raw);
-      if (!Array.isArray(cookies)) throw new Error('Must be an array');
-    } catch {
-      showToast('Invalid JSON. Must be a JSON array of cookie objects.');
-      return;
-    }
-
-    const res = await fetch('/api/settings/cookies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cookies }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      showToast('Cookies saved!');
-      checkCookies();
-      $('#fCookies').value = '';
-    } else {
-      showToast(data.error || 'Failed to save cookies', 6000);
-    }
   });
 
   const btnTestCookies = $('#btnTestCookies');
@@ -791,7 +764,7 @@
         showToast('Test failed: ' + err.message, 6000);
       } finally {
         btnTestCookies.disabled = false;
-        btnTestCookies.textContent = 'Test Cookies (Inbox Check)';
+        btnTestCookies.textContent = 'Check connection';
       }
     });
   }

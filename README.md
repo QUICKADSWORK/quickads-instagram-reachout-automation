@@ -18,31 +18,22 @@ Discover Instagram influencers, send DMs, and let an AI agent negotiate paid col
 
 ## Connecting Instagram
 
-DM sending needs your Instagram session cookies (`sessionid`, `ds_user_id`,
-`csrftoken`). Open **Negotiate → Settings → Connect Instagram** and pick one:
+DM sending needs your Instagram session, which you connect with the free
+**QuickAds helper** browser extension. Open **Negotiate → Settings → Connect
+Instagram** and follow the 3 on-screen steps:
 
-1. **Browser extension (recommended)** — In Settings, click **Download
-   Extension (.zip)** (served by the app from the `extension/` folder), unzip
-   it, and load it unpacked in Chrome/Edge (`chrome://extensions` → Developer
-   mode → Load unpacked). Then generate a pairing code in the app and connect
-   in one click while logged into Instagram. Reads only the 3 required cookies.
-   For a one-click install with auto-updates you can also publish it to the
-   Chrome Web Store (one-time $5 developer fee) — the same folder is what you'd
-   upload.
-2. **Log in via Apify** (works on any host) — Enter your IG username/password
-   (+ a 2FA code if asked). The app runs an Apify login actor
-   (`shareze001/instagram-cookies` by default) that logs in on **Apify's**
-   infrastructure with proxies and returns the session cookies — no browser on
-   your server, and far less likely to hit Instagram's datacenter-IP
-   challenges. Uses your Apify credits. Configure via `IG_LOGIN_ACTOR_ID` /
-   `IG_LOGIN_USER_FIELD` / `IG_LOGIN_PASS_FIELD` / `IG_LOGIN_CODE_FIELD`.
-3. **Local headless login** (advanced) — Enter your IG username/password; the
-   server logs in via Playwright/Chromium **locally**. Needs Chromium + system
-   libraries (the shipped `Dockerfile`), and only works for accounts **without**
-   2FA. On hosts lacking those libs it reports `BROWSER_DEPS_MISSING` — use the
-   Apify login or extension instead.
-4. **Paste cookies manually** — Paste the cookie JSON array (from a cookie
-   exporter extension) under "Paste cookies manually".
+1. **Add the helper to your browser** — click **Download helper**, unzip it, and
+   load it in Chrome/Edge (`chrome://extensions` → turn on Developer mode → Load
+   unpacked → pick the folder). One time only.
+2. **Log into Instagram** in the same browser.
+3. **Get your code and connect** — click **Get my code**, then open the helper,
+   enter your app address + the code, and press Connect.
+
+The helper reads only the 3 required cookies (`sessionid`, `ds_user_id`,
+`csrftoken`) from your logged-in session and sends them to the app. Use
+**Check connection** to confirm it worked. (For a true one-click install with
+auto-updates, the same `extension/` folder can be published to the Chrome Web
+Store — one-time $5 developer fee.)
 
 ## How It Works
 
