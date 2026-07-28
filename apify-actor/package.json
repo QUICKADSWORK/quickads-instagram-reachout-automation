@@ -1,0 +1,14 @@
+{
+  "name": "instagram-cookie-login",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Apify actor: log into Instagram and return session cookies.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.2.6",
+    "playwright": "*"
+  }
+}
