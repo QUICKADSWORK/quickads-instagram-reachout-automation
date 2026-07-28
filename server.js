@@ -800,6 +800,13 @@ app.delete('/api/ready-influencers/:username', (req, res) => {
   res.json({ ok: true, removed: before - all.length, total: all.length });
 });
 
+// Clear the whole roster in one go.
+app.delete('/api/ready-influencers', (req, res) => {
+  const removed = readDB('ready_influencers.json').length;
+  writeDB('ready_influencers.json', []);
+  res.json({ ok: true, removed, total: 0 });
+});
+
 // ═══════════════════════════════════════════════════════════
 //  Campaign Routes
 // ═══════════════════════════════════════════════════════════

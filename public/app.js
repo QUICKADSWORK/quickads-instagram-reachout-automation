@@ -992,4 +992,26 @@
       downloadBlob(csv, 'ready-influencers.csv', 'text/csv');
     });
   }
+
+  const btnReadyClear = $('#btnReadyClear');
+  if (btnReadyClear) {
+    btnReadyClear.addEventListener('click', async () => {
+      if (!readyList.length) { showToast('The list is already empty.'); return; }
+      if (!confirm(`Remove all ${readyList.length} saved influencers?\n\nThis cannot be undone — export a CSV first if you want a copy.`)) return;
+
+      btnReadyClear.disabled = true;
+      try {
+        const res = await fetch('/api/ready-influencers', { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Could not clear the list'); return; }
+        readyList = [];
+        renderReady();
+        showToast(`Removed ${data.removed} influencer${data.removed === 1 ? '' : 's'}`);
+      } catch (err) {
+        showToast('Could not clear the list: ' + err.message, 6000);
+      } finally {
+        btnReadyClear.disabled = false;
+      }
+    });
+  }
 })();
