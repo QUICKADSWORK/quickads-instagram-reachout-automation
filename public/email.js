@@ -224,6 +224,7 @@
     $('#tabContactCount').textContent = contacts.length;
     renderVarChips();
     refreshPreview();
+    refreshRosterHint();
   }
 
   $('#btnUpload').addEventListener('click', () => $('#contactFile').click());
@@ -254,6 +255,53 @@
       showToast(err.message, 7000);
     } finally {
       $('#contactFile').value = '';
+    }
+  });
+
+  // Pull in the Ready-to-Go influencer roster (only those with an email).
+  async function refreshRosterHint() {
+    const btn = $('#btnFromRoster');
+    try {
+      const p = await api('/api/email/contacts/roster-preview');
+      if (!p.rosterTotal) {
+        $('#rosterHint').textContent = 'Your Ready-to-Go influencer list is empty — add creators on the Discovery page and they can be imported here.';
+        btn.disabled = true;
+        return;
+      }
+      if (!p.withEmail) {
+        $('#rosterHint').textContent = `You have ${p.rosterTotal} saved influencer(s), but none of them have an email address saved.`;
+        btn.disabled = true;
+        return;
+      }
+      btn.disabled = false;
+      $('#rosterHint').textContent =
+        `${p.withEmail} of your ${p.rosterTotal} saved influencers have an email address`
+        + (p.newOnes ? ` — ${p.newOnes} not in your contacts yet.` : ' — all of them are already imported.');
+    } catch (_) {
+      $('#rosterHint').textContent = '';
+    }
+  }
+
+  $('#btnFromRoster').addEventListener('click', async () => {
+    const btn = $('#btnFromRoster');
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = 'Importing…';
+    try {
+      const data = await api('/api/email/contacts/from-roster', { method: 'POST' });
+      $('#uploadMsg').textContent =
+        `From your saved influencers: added ${data.added}, updated ${data.updated}`
+        + (data.skippedNoEmail ? `, skipped ${data.skippedNoEmail} without an email address` : '') + '.';
+      showToast(`Imported ${data.added + data.updated} influencer contacts`);
+      loadContacts();
+      loadStats();
+    } catch (err) {
+      $('#uploadMsg').textContent = err.message;
+      showToast(err.message, 7000);
+    } finally {
+      btn.textContent = label;
+      btn.disabled = false;
+      refreshRosterHint();
     }
   });
 

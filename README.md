@@ -26,10 +26,17 @@ Open **Email Outreach** in the top nav. Four steps:
    [App Password](https://myaccount.google.com/apppasswords), not your normal
    password. Use **Test** to verify the login (and optionally send yourself a
    test email).
-2. **Contacts** — upload an `.xlsx` or `.csv`. A column named **Email** is
-   required; **Full Name** / **First Name** are used for personalization, and
-   any other column (Company, City, …) becomes a `{{variable}}` you can use in
-   your message. Re-importing merges by email instead of duplicating.
+2. **Contacts** — two ways to load people in:
+   - **Upload sheet** — an `.xlsx` or `.csv`. A column named **Email** is
+     required; **Full Name** / **First Name** are used for personalization, and
+     any other column (Company, City, …) becomes a `{{variable}}` you can use in
+     your message.
+   - **Use my saved influencers** — pulls your Ready-to-Go roster straight in,
+     keeping only the creators that have an email saved (the rest are skipped
+     and counted). Their handle, category and follower count come along as
+     `{{username}}`, `{{category}}` and `{{followers}}` (formatted as "49.1K").
+
+   Either way, re-importing merges by email instead of duplicating.
 3. **Message** — write a subject + body, click a chip to insert a variable, and
    see a live preview rendered against a real contact.
 4. **Send** — pick the sender, template, audience (*everyone* or *only people
@@ -139,6 +146,8 @@ Open **http://localhost:3000** in your browser.
 | POST | `/api/email/senders/:id/test` | Verify SMTP login, optionally send a test email |
 | GET | `/api/email/contacts` | List contacts |
 | POST | `/api/email/contacts/import` | Import an .xlsx/.csv sheet (base64) |
+| GET | `/api/email/contacts/roster-preview` | How many saved influencers have an email |
+| POST | `/api/email/contacts/from-roster` | Import Ready-to-Go influencers that have emails |
 | GET/POST | `/api/email/templates` | List/save templates |
 | POST | `/api/email/templates/preview` | Render a template against a contact |
 | GET/POST | `/api/email/campaigns` | List/create (and start) a campaign |
