@@ -166,13 +166,15 @@
           (Company, Brand, City…) become variables you can use in your message.
         </div>
 
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
           <input type="file" id="contactFile" accept=".csv,.xlsx,.xls,text/csv" style="display:none;" />
           <button id="btnUpload" class="btn btn-primary">⬆ Upload sheet</button>
+          <button id="btnFromRoster" class="btn btn-outline" type="button">⚡ Use my saved influencers</button>
           <button id="btnSampleCsv" class="btn btn-outline" type="button">Download sample sheet</button>
           <button id="btnClearContacts" class="btn btn-outline" type="button">Remove all</button>
-          <span id="uploadMsg" class="muted"></span>
         </div>
+        <p class="muted" id="rosterHint" style="margin:0 0 10px;"></p>
+        <p class="muted" id="uploadMsg" style="margin:0 0 10px;"></p>
 
         <div id="contactsEmpty" class="empty-state" style="padding:40px 20px;">
           <p>No contacts yet. Upload a sheet to get started.</p>

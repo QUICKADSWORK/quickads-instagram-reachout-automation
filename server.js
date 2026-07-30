@@ -2916,14 +2916,21 @@ app.post('/api/email/contacts/import', (req, res) => {
     return res.status(400).json({ error: 'That sheet has no rows.' });
   }
 
-  const cleaned = rows.map(normalizeContact).filter(Boolean);
-  const invalid = rows.length - cleaned.length;
-  if (!cleaned.length) {
+  const result = mergeContactRows(rows);
+  if (!result.imported) {
     const cols = Object.keys(rows[0] || {}).join(', ') || '(none)';
     return res.status(400).json({
       error: `No valid email addresses found. Make sure one column is named "Email". Columns seen: ${cols}`,
     });
   }
+  res.json({ ok: true, ...result });
+});
+
+// Normalize rows, then merge them into the saved contacts by email address
+// (existing entries are enriched rather than duplicated).
+function mergeContactRows(rows) {
+  const cleaned = rows.map(normalizeContact).filter(Boolean);
+  const invalid = rows.length - cleaned.length;
 
   const existing = readDB(EMAIL_CONTACTS_FILE);
   const byEmail = new Map(existing.map(c => [c.email, c]));
@@ -2949,8 +2956,63 @@ app.post('/api/email/contacts/import', (req, res) => {
   }
 
   const all = Array.from(byEmail.values());
-  writeDB(EMAIL_CONTACTS_FILE, all);
-  res.json({ ok: true, added, updated, invalid, total: all.length, contacts: all });
+  if (cleaned.length) writeDB(EMAIL_CONTACTS_FILE, all);
+  return { added, updated, invalid, imported: cleaned.length, total: all.length, contacts: all };
+}
+
+// How many saved influencers could become email contacts.
+app.get('/api/email/contacts/roster-preview', (req, res) => {
+  const roster = readDB('ready_influencers.json');
+  const withEmail = roster.filter(i => isEmail(i.email));
+  const known = new Set(readDB(EMAIL_CONTACTS_FILE).map(c => c.email));
+  res.json({
+    rosterTotal: roster.length,
+    withEmail: withEmail.length,
+    newOnes: withEmail.filter(i => !known.has(String(i.email).trim().toLowerCase())).length,
+  });
+});
+
+// Pull the Ready-to-Go influencer roster in as email contacts, keeping only
+// the ones that actually have an email address.
+app.post('/api/email/contacts/from-roster', (req, res) => {
+  const roster = readDB('ready_influencers.json');
+  if (!roster.length) {
+    return res.status(400).json({ error: 'Your Ready-to-Go influencer list is empty.' });
+  }
+
+  const usable = roster.filter(i => isEmail(i.email));
+  if (!usable.length) {
+    return res.status(400).json({
+      error: `None of your ${roster.length} saved influencer(s) have an email address saved, so there is nothing to import.`,
+    });
+  }
+
+  // Category/followers land in `custom`, so {{category}} and {{followers}}
+  // become usable variables in email templates. Followers are formatted the
+  // way you'd actually write them in a message ("49.1K", not "49100").
+  const prettyFollowers = (n) => {
+    const num = Number(n);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    if (num >= 1e6) return (num / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (num >= 1e3) return (num / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(num);
+  };
+
+  const rows = usable.map(i => ({
+    Email: i.email,
+    'Full Name': i.fullName || '',
+    username: i.username || '',
+    category: i.category || '',
+    followers: prettyFollowers(i.followers),
+  }));
+
+  const result = mergeContactRows(rows);
+  res.json({
+    ok: true,
+    ...result,
+    skippedNoEmail: roster.length - usable.length,
+    rosterTotal: roster.length,
+  });
 });
 
 app.patch('/api/email/contacts/:id', (req, res) => {
