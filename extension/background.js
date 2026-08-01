@@ -13,6 +13,16 @@ function getCookie(name) {
   });
 }
 
+// Chrome reports sameSite as no_restriction | lax | strict | unspecified, but
+// the DM automation loads these cookies into Playwright, which only accepts
+// Strict | Lax | None. Translate here so the app never sees Chrome's spelling.
+function sameSiteFor(v) {
+  const s = String(v || '').toLowerCase();
+  if (s === 'strict') return 'Strict';
+  if (s === 'none' || s === 'no_restriction') return 'None';
+  return 'Lax';
+}
+
 // Read the 3 cookies the app needs, in the shape it expects.
 async function readIgCookies() {
   const out = [];
@@ -26,8 +36,8 @@ async function readIgCookies() {
         path: c.path || '/',
         secure: c.secure !== false,
         httpOnly: !!c.httpOnly,
-        sameSite: c.sameSite || 'Lax',
-        ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
+        sameSite: sameSiteFor(c.sameSite),
+        ...(c.expirationDate ? { expires: Math.floor(c.expirationDate) } : {}),
       });
     }
   }
