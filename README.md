@@ -54,9 +54,31 @@ error) with a CSV export. Everything is stored on disk in `DATA_DIR`:
 
 ## Connecting Instagram
 
-DM sending needs your Instagram session, which you connect with the free
-**QuickAds helper** browser extension. Open **Negotiate → Settings → Connect
-Instagram** and follow the 3 on-screen steps:
+DM sending needs your Instagram session. Open **Negotiate → Settings → Connect
+Instagram**. There are two ways:
+
+### Option A — Log in inside the app (easiest, nothing to install)
+
+Set `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` (from
+[browserbase.com](https://www.browserbase.com)) in your server environment.
+A **Log in to Instagram** button then appears in Settings: click it, an
+Instagram login page streams into the app, you log in once, and the session
+cookies are captured automatically — the window closes by itself when it's
+done.
+
+Under the hood a real Chrome runs on Browserbase with a **residential IP**
+(Instagram frequently blocks datacenter logins), the login is saved to a
+persistent Browserbase *context* so it can be reused, and the app reads the
+cookies over CDP. No Chromium is needed on your own server, so this works on
+Render's plain Node runtime.
+
+> Browserbase is a paid service. Instagram may still flag automated activity —
+> a residential IP reduces that risk but doesn't remove it.
+
+### Option B — Browser helper extension (free)
+
+If Browserbase isn't configured, Settings shows the free extension flow
+instead — 3 on-screen steps:
 
 1. **Add the helper to your browser** — click **Download helper**, unzip it, and
    load it in Chrome/Edge (`chrome://extensions` → turn on Developer mode → Load
@@ -165,6 +187,10 @@ Open **http://localhost:3000** in your browser.
 ### Connect Instagram
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/settings/browser-login/status` | Whether hosted browser login is configured |
+| POST | `/api/settings/browser-login/start` | Open a hosted browser on the IG login page |
+| POST | `/api/settings/browser-login/capture` | Poll for the session cookies and save them |
+| POST | `/api/settings/browser-login/cancel` | Release the hosted browser session |
 | GET | `/api/settings/pair` | Mint a one-time pairing code for the extension |
 | POST | `/api/settings/cookies/import` | Extension posts cookies here with the code |
 | POST | `/api/settings/cookies/apify-login` | Log in via an Apify actor; stores returned cookies |

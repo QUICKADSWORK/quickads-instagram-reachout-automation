@@ -741,10 +741,16 @@
     const origin = $('#appOrigin');
     if (origin) origin.textContent = window.location.origin;
     checkCookies();
+    checkHostedAvailable();
   });
 
   $('#settingsClose').addEventListener('click', () => {
     $('#settingsOverlay').style.display = 'none';
+    // Don't leave a hosted browser session running in the background.
+    if (typeof closeHostedFrame === 'function' && $('#hostedFrameWrap')?.style.display === 'block') {
+      closeHostedFrame();
+      fetch('/api/settings/browser-login/cancel', { method: 'POST' }).catch(() => {});
+    }
   });
 
   const btnTestCookies = $('#btnTestCookies');
@@ -768,6 +774,102 @@
       }
     });
   }
+
+  // ── Hosted browser login (Browserbase) ────────────────
+  let hostedPoll = null;
+
+  async function checkHostedAvailable() {
+    try {
+      const s = await fetch('/api/settings/browser-login/status').then(r => r.json());
+      if (s.configured) {
+        $('#hostedCard').style.display = 'block';
+        $('#hostedSetupNote').style.display = 'none';
+        $('#extHeading').textContent = 'Or connect with the browser helper (3 steps):';
+      } else {
+        $('#hostedCard').style.display = 'none';
+        $('#hostedSetupNote').style.display = 'block';
+        $('#hostedSetupNote').innerHTML =
+          'Tip: you can skip the helper install entirely by setting <code>' +
+          (s.missing || []).join('</code> and <code>') +
+          '</code> in your server settings — then Instagram login happens right inside this app.';
+        $('#extHeading').textContent = 'Connect with the browser helper (3 steps):';
+      }
+    } catch (_) {}
+  }
+
+  function stopHostedPoll() {
+    if (hostedPoll) { clearInterval(hostedPoll); hostedPoll = null; }
+  }
+
+  function closeHostedFrame() {
+    stopHostedPoll();
+    $('#hostedFrameWrap').style.display = 'none';
+    $('#hostedFrame').src = 'about:blank';
+    $('#btnHostedLogin').disabled = false;
+    $('#btnHostedLogin').textContent = 'Log in to Instagram';
+  }
+
+  const btnHostedLogin = $('#btnHostedLogin');
+  if (btnHostedLogin) {
+    btnHostedLogin.addEventListener('click', async () => {
+      btnHostedLogin.disabled = true;
+      btnHostedLogin.textContent = 'Opening…';
+      $('#hostedMsg').textContent = 'Starting a secure browser…';
+      try {
+        const res = await fetch('/api/settings/browser-login/start', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.liveViewUrl) {
+          $('#hostedMsg').textContent = data.error || 'Could not open the login window.';
+          btnHostedLogin.disabled = false;
+          btnHostedLogin.textContent = 'Log in to Instagram';
+          return;
+        }
+        $('#hostedFrame').src = data.liveViewUrl;
+        $('#hostedFrameWrap').style.display = 'block';
+        $('#hostedMsg').textContent = 'Waiting for you to log in…';
+        btnHostedLogin.textContent = 'Login window open';
+
+        // Poll until the session cookies appear, then finish automatically.
+        stopHostedPoll();
+        hostedPoll = setInterval(async () => {
+          try {
+            const r = await fetch('/api/settings/browser-login/capture', { method: 'POST' });
+            const d = await r.json();
+            if (d.ok && d.ready) {
+              closeHostedFrame();
+              $('#hostedMsg').textContent = '✓ Instagram connected!';
+              showToast('Instagram connected', 5000);
+              checkCookies();
+            } else if (!r.ok && d.error) {
+              $('#hostedMsg').textContent = d.error;
+              stopHostedPoll();
+            }
+          } catch (_) {}
+        }, 4000);
+      } catch (err) {
+        $('#hostedMsg').textContent = 'Error: ' + err.message;
+        btnHostedLogin.disabled = false;
+        btnHostedLogin.textContent = 'Log in to Instagram';
+      }
+    });
+  }
+
+  const btnHostedCancel = $('#btnHostedCancel');
+  if (btnHostedCancel) {
+    btnHostedCancel.addEventListener('click', async () => {
+      closeHostedFrame();
+      $('#hostedMsg').textContent = '';
+      try { await fetch('/api/settings/browser-login/cancel', { method: 'POST' }); } catch (_) {}
+    });
+  }
+
+  // Browserbase posts this when the live view drops its connection.
+  window.addEventListener('message', (e) => {
+    if (e.data === 'browserbase-disconnected') {
+      $('#hostedMsg').textContent = 'The login window disconnected. Click "Log in to Instagram" to try again.';
+      closeHostedFrame();
+    }
+  });
 
   // ── Extension install steps toggle ────────────────────
   const toggleInstallSteps = $('#toggleInstallSteps');
