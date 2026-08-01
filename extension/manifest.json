@@ -1,13 +1,32 @@
 {
   "manifest_version": 3,
   "name": "QuickAds — Instagram Connect",
-  "version": "1.0.0",
-  "description": "Securely send your logged-in Instagram session cookies to your QuickAds Reachout app. Only the 3 required cookies are read.",
-  "permissions": ["cookies", "storage"],
-  "host_permissions": ["https://*.instagram.com/*"],
+  "version": "2.0.0",
+  "description": "Connects your logged-in Instagram session to your QuickAds app automatically. Reads only the 3 cookies the app needs.",
+  "permissions": ["cookies", "storage", "tabs", "scripting"],
+  "host_permissions": ["*://*.instagram.com/*"],
   "optional_host_permissions": ["*://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["*://*.instagram.com/*"],
+      "js": ["ig-prompt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://localhost:*/*",
+        "http://127.0.0.1/*",
+        "http://127.0.0.1:*/*",
+        "https://*.onrender.com/*"
+      ],
+      "js": ["app-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
-    "default_title": "QuickAds — Instagram Connect",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_title": "QuickAds — Instagram Connect"
   }
 }

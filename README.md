@@ -7,7 +7,7 @@ Discover Instagram influencers, send DMs, and let an AI agent negotiate paid col
 - **Influencer Discovery** — Find influencers by seed accounts, follower range, and niche using Apify
 - **Influencer Analytics** — Avg views, avg likes, engagement rate, follower ratio, and posting frequency computed per creator
 - **AI Brand-Fit Scoring** — Describe your brand once; Claude scores each influencer 0–100 for fit, with reasoning and red flags
-- **Connect Instagram (auto)** — Import your Instagram session automatically via a **browser extension** or **headless login**, or paste cookies manually
+- **Connect Instagram (auto)** — A browser helper detects itself, detects your Instagram login, and connects in one click — no pairing code, no URL. Hosted-browser login and manual paste available as fallbacks
 - **Bulk DM Outreach** — Send personalized first DMs to all discovered creators
 - **AI Negotiation Agent** — Claude AI handles the full deal negotiation via Instagram DMs
 - **Autopilot Mode** — Automatically reads creator replies, generates smart responses, and sends them back
@@ -55,43 +55,39 @@ error) with a CSV export. Everything is stored on disk in `DATA_DIR`:
 ## Connecting Instagram
 
 DM sending needs your Instagram session. Open **Negotiate → Settings → Connect
-Instagram**. There are two ways:
+Instagram** — you'll see a live 3-step checklist that fills itself in.
 
-### Option A — Log in inside the app (easiest, nothing to install)
+### Recommended — the browser helper
 
-Set `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` (from
-[browserbase.com](https://www.browserbase.com)) in your server environment.
-A **Log in to Instagram** button then appears in Settings: click it, an
-Instagram login page streams into the app, you log in once, and the session
-cookies are captured automatically — the window closes by itself when it's
-done.
+1. **Install the helper** — click **Download helper**, unzip it, then in Chrome
+   or Edge open `chrome://extensions` → turn on **Developer mode** → **Load
+   unpacked** → pick the folder. Refresh the app and Step 1 turns green by
+   itself.
+2. **Log into Instagram** in the same browser. Step 2 turns green
+   automatically — no refresh needed, just press **Re-check** if you're quick.
+3. **Connect** — press **Connect Instagram**. The cookies are read and saved,
+   and the app shows **"✓ Connected to Instagram — ready for outreach"**.
 
-Under the hood a real Chrome runs on Browserbase with a **residential IP**
-(Instagram frequently blocks datacenter logins), the login is saved to a
-persistent Browserbase *context* so it can be reused, and the app reads the
-cookies over CDP. No Chromium is needed on your own server, so this works on
-Render's plain Node runtime.
+There is **no pairing code and no app address to type**. The helper injects a
+bridge into the app page, so the page saves the session with a normal
+same-origin request. The first connect asks you to approve the site once, so a
+random website can't request your Instagram session.
 
-> Browserbase is a paid service. Instagram may still flag automated activity —
-> a residential IP reduces that risk but doesn't remove it.
+**Or connect from Instagram:** after you log in on instagram.com, a QuickAds
+card appears in the corner offering to connect that account. Press it and the
+app finishes the job by itself.
 
-### Option B — Browser helper extension (free)
+See `extension/README.md` for details and custom-domain setup.
 
-If Browserbase isn't configured, Settings shows the free extension flow
-instead — 3 on-screen steps:
+### Other ways to connect
 
-1. **Add the helper to your browser** — click **Download helper**, unzip it, and
-   load it in Chrome/Edge (`chrome://extensions` → turn on Developer mode → Load
-   unpacked → pick the folder). One time only.
-2. **Log into Instagram** in the same browser.
-3. **Get your code and connect** — click **Get my code**, then open the helper,
-   enter your app address + the code, and press Connect.
+Under **Other ways to connect** in Settings:
 
-The helper reads only the 3 required cookies (`sessionid`, `ds_user_id`,
-`csrftoken`) from your logged-in session and sends them to the app. Use
-**Check connection** to confirm it worked. (For a true one-click install with
-auto-updates, the same `extension/` folder can be published to the Chrome Web
-Store — one-time $5 developer fee.)
+- **Hosted browser login** — set `BROWSERBASE_API_KEY` and
+  `BROWSERBASE_PROJECT_ID` and an Instagram login window opens inside the app
+  (a real Chrome on Browserbase with a residential IP). Nothing to install, but
+  it's a paid service.
+- **Pairing code** — the manual fallback if the helper can't reach the page.
 
 ## How It Works
 

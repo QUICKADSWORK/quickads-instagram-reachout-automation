@@ -1,119 +1,96 @@
-// QuickAds — Instagram Connect extension popup.
-// Reads only the 3 required Instagram cookies and POSTs them to the app's
-// /api/settings/cookies/import endpoint together with a one-time pairing code.
-
-const REQUIRED = ['sessionid', 'ds_user_id', 'csrftoken'];
-const IG_URL = 'https://www.instagram.com';
+// Popup: shows what's connected and gets you to the app. Most people never
+// need to open this — the app page and the Instagram prompt do the work.
 
 const $ = (id) => document.getElementById(id);
-const appUrlInput = $('appUrl');
-const codeInput = $('code');
-const connectBtn = $('connect');
-const statusEl = $('status');
-const igDot = $('igDot');
 
-function setStatus(msg, kind) {
-  statusEl.textContent = msg;
-  statusEl.className = 'status show ' + (kind || 'info');
-}
-
-// Restore last-used app URL.
-chrome.storage.local.get(['appUrl'], (r) => {
-  if (r.appUrl) appUrlInput.value = r.appUrl;
-});
-
-// Read a single cookie by name from the Instagram domain.
-function getCookie(name) {
-  return new Promise((resolve) => {
-    chrome.cookies.get({ url: IG_URL, name }, (c) => resolve(c || null));
+const ask = (message) => new Promise((resolve) => {
+  chrome.runtime.sendMessage(message, (r) => {
+    if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message });
+    resolve(r || { ok: false });
   });
+});
+
+function setRow(dotId, labelId, subId, state, label, sub) {
+  $(dotId).className = 'dot' + (state ? ' ' + state : '');
+  $(labelId).textContent = label;
+  $(subId).textContent = sub || '';
 }
 
-// Live indicator: is the user logged into Instagram right now?
-(async () => {
-  const sid = await getCookie('sessionid');
-  igDot.className = sid && sid.value ? 'dot on' : 'dot';
-})();
-
-function normalizeUrl(raw) {
-  let u = (raw || '').trim().replace(/\/+$/, '');
-  if (u && !/^https?:\/\//i.test(u)) u = 'https://' + u;
-  return u;
+async function currentTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
 }
 
-async function ensureHostPermission(appUrl) {
+async function render() {
+  const status = await ask({ type: 'GET_STATUS' });
+
+  // Instagram
+  if (status.loggedIn) {
+    setRow('dotIg', 'igLabel', 'igSub', 'ok', 'Instagram: logged in', 'Session found in this browser');
+  } else {
+    setRow('dotIg', 'igLabel', 'igSub', 'bad', 'Instagram: not logged in',
+      'Open instagram.com and log in first');
+  }
+
+  // App
+  if (status.appOrigin) {
+    setRow('dotApp', 'appLabel', 'appSub', status.connectedAt ? 'ok' : '',
+      status.connectedAt ? 'QuickAds: connected' : 'QuickAds app found', status.appOrigin);
+  } else {
+    setRow('dotApp', 'appLabel', 'appSub', 'bad', 'QuickAds app not found yet',
+      'Open your QuickAds app once');
+  }
+
+  $('btnOpen').disabled = !status.appOrigin;
+  $('btnOpen').textContent = status.connectedAt ? 'Open QuickAds' : 'Open QuickAds & connect';
+
+  // Offer to enable the bridge on a custom domain the manifest doesn't cover.
+  const tab = await currentTab();
   try {
-    const origin = new URL(appUrl).origin + '/*';
-    const has = await chrome.permissions.contains({ origins: [origin] });
-    if (has) return true;
-    return await chrome.permissions.request({ origins: [origin] });
-  } catch (_) {
-    return false;
+    const origin = tab && tab.url ? new URL(tab.url).origin : '';
+    const isIg = /instagram\.com$/.test(new URL(tab.url).hostname);
+    const covered = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+      || /\.onrender\.com$/.test(new URL(tab.url).hostname);
+    if (origin && !isIg && !covered && origin !== status.appOrigin) {
+      $('btnEnableSite').style.display = 'block';
+      $('btnEnableSite').dataset.origin = origin;
+    }
+  } catch (_) {}
+
+  if (status.loggedIn && status.appOrigin && !status.connectedAt) {
+    $('msg').textContent = 'Ready to connect — press the button above.';
+  } else if (status.connectedAt) {
+    $('msg').textContent = 'Instagram is connected. You can close this.';
   }
 }
 
-connectBtn.addEventListener('click', async () => {
-  const appUrl = normalizeUrl(appUrlInput.value);
-  const code = codeInput.value.trim();
+$('btnOpen').addEventListener('click', async () => {
+  const res = await ask({ type: 'CONNECT_FROM_INSTAGRAM' });
+  if (res.ok) window.close();
+  else $('msg').textContent = res.error || 'Could not open the app.';
+});
 
-  if (!appUrl) return setStatus('Enter your app URL.', 'err');
-  if (!code) return setStatus('Enter the pairing code from the app.', 'err');
+// Custom domains: ask for permission and inject the bridge on the fly.
+$('btnEnableSite').addEventListener('click', async () => {
+  const origin = $('btnEnableSite').dataset.origin;
+  if (!origin) return;
+  const granted = await chrome.permissions.request({ origins: [origin + '/*'] });
+  if (!granted) { $('msg').textContent = 'Permission denied.'; return; }
 
-  connectBtn.disabled = true;
-  setStatus('Reading Instagram session…', 'info');
-
+  const tab = await currentTab();
   try {
-    chrome.storage.local.set({ appUrl });
-
-    const granted = await ensureHostPermission(appUrl);
-    if (!granted) {
-      setStatus('Permission to reach your app was denied.', 'err');
-      connectBtn.disabled = false;
-      return;
-    }
-
-    // Collect only the required cookies.
-    const cookies = [];
-    for (const name of REQUIRED) {
-      const c = await getCookie(name);
-      if (c && c.value) {
-        cookies.push({
-          name: c.name,
-          value: c.value,
-          domain: c.domain || '.instagram.com',
-          path: c.path || '/',
-          secure: c.secure !== false,
-          httpOnly: !!c.httpOnly,
-          sameSite: c.sameSite || 'Lax',
-          ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
-        });
-      }
-    }
-
-    const missing = REQUIRED.filter((n) => !cookies.some((c) => c.name === n));
-    if (missing.length) {
-      setStatus(`Not logged into Instagram (missing: ${missing.join(', ')}). Open instagram.com, log in, then retry.`, 'err');
-      connectBtn.disabled = false;
-      return;
-    }
-
-    setStatus('Sending to your app…', 'info');
-    const res = await fetch(`${appUrl}/api/settings/cookies/import`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, cookies }),
-    });
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      setStatus(data.error || `Failed (HTTP ${res.status}).`, 'err');
-    } else {
-      setStatus('✓ Instagram connected! You can close this and start sending DMs.', 'ok');
-      codeInput.value = '';
-    }
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['app-bridge.js'] });
+    await chrome.scripting.registerContentScripts([{
+      id: 'app-bridge-' + btoa(origin).replace(/[^a-z0-9]/gi, ''),
+      matches: [origin + '/*'],
+      js: ['app-bridge.js'],
+      runAt: 'document_idle',
+    }]).catch(() => {});
+    $('msg').textContent = 'Enabled. Reload your QuickAds page and press Connect Instagram.';
+    $('btnEnableSite').style.display = 'none';
   } catch (err) {
-    setStatus('Error: ' + err.message + ' — check the app URL is reachable.', 'err');
-  } finally {
-    connectBtn.disabled = false;
+    $('msg').textContent = 'Could not enable: ' + err.message;
   }
 });
+
+render();
