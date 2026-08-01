@@ -1499,23 +1499,45 @@ function consumePairingCode(code) {
   return exp >= Date.now();
 }
 
+// Chrome's cookie API reports sameSite as "no_restriction" | "lax" | "strict"
+// | "unspecified", but the Apify DM actor feeds these straight into Playwright,
+// which only accepts Strict | Lax | None and otherwise fails the whole send
+// with: cookies[0].sameSite: expected one of (Strict|Lax|None).
+function normalizeSameSite(v) {
+  const s = String(v || '').toLowerCase();
+  if (s === 'strict') return 'Strict';
+  if (s === 'none' || s === 'no_restriction') return 'None';
+  return 'Lax'; // covers "lax", "unspecified", and anything missing
+}
+
+// Produce a cookie object Playwright will accept: only known keys, and
+// expirationDate (Chrome's name) mapped to expires (Playwright's name).
+function toPlaywrightCookie(c) {
+  const expires = Number(c.expires ?? c.expirationDate);
+  return {
+    name: c.name,
+    value: String(c.value ?? ''),
+    domain: c.domain || '.instagram.com',
+    path: c.path || '/',
+    secure: c.secure !== false,
+    httpOnly: !!c.httpOnly,
+    sameSite: normalizeSameSite(c.sameSite),
+    ...(Number.isFinite(expires) && expires > 0 ? { expires: Math.floor(expires) } : {}),
+  };
+}
+
+// Normalize a whole cookie array without dropping any of them.
+function sanitizeCookies(cookies) {
+  if (!Array.isArray(cookies)) return [];
+  return cookies.filter(c => c && c.name).map(toPlaywrightCookie);
+}
+
 // Keep only the cookies the app actually needs, normalized to the standard
 // {name, value, domain, path, ...} shape Instagram cookie exporters produce.
 function filterRequiredCookies(cookies) {
   if (!Array.isArray(cookies)) return [];
   const wanted = new Set(REQUIRED_COOKIE_NAMES);
-  return cookies
-    .filter(c => c && wanted.has(c.name))
-    .map(c => ({
-      name: c.name,
-      value: String(c.value ?? ''),
-      domain: c.domain || '.instagram.com',
-      path: c.path || '/',
-      secure: c.secure !== false,
-      httpOnly: !!c.httpOnly,
-      sameSite: c.sameSite || 'Lax',
-      ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
-    }));
+  return cookies.filter(c => c && wanted.has(c.name)).map(toPlaywrightCookie);
 }
 
 // Parse a "sessionid=x; csrftoken=y; ds_user_id=z" cookie string into objects.
@@ -1601,17 +1623,19 @@ function extractCookiesDeep(node, depth = 0) {
 // Load cookies from disk, falling back to INSTAGRAM_COOKIES env var
 // (env var is useful on ephemeral hosts like Render free tier where
 //  the data/ folder is wiped on every cold start / redeploy).
+// Sanitized on the way out, so sessions saved before the sameSite fix keep
+// working without the user having to reconnect.
 function loadCookies() {
   try {
     const onDisk = readDB('instagram_cookies.json');
-    if (Array.isArray(onDisk) && onDisk.length) return onDisk;
+    if (Array.isArray(onDisk) && onDisk.length) return sanitizeCookies(onDisk);
   } catch (_) {}
 
   const envRaw = process.env.INSTAGRAM_COOKIES;
   if (envRaw) {
     try {
       const parsed = JSON.parse(envRaw);
-      if (Array.isArray(parsed) && parsed.length) return parsed;
+      if (Array.isArray(parsed) && parsed.length) return sanitizeCookies(parsed);
     } catch (err) {
       console.error('INSTAGRAM_COOKIES env var is set but not valid JSON:', err.message);
     }
@@ -1639,7 +1663,9 @@ function validateCookies(cookies) {
 async function sendDMviaApify(cookies, username, message) {
   const actorId = 'am_production~instagram-direct-messages-dms-automation';
   const actorInput = {
-    INSTAGRAM_COOKIES: cookies,
+    // Sanitize here too: the actor loads these into Playwright, which rejects
+    // anything other than Strict|Lax|None for sameSite.
+    INSTAGRAM_COOKIES: sanitizeCookies(cookies),
     influencers: [username],
     messages: [message],
   };
@@ -1759,8 +1785,11 @@ app.post('/api/settings/cookies', (req, res) => {
   if (!check.ok) {
     return res.status(400).json({ error: check.error });
   }
-  writeDB('instagram_cookies.json', cookies);
-  res.json({ ok: true, count: cookies.length });
+  // Normalize before saving — browser-supplied cookies carry values the DM
+  // actor's Playwright rejects (e.g. sameSite: "unspecified").
+  const clean = sanitizeCookies(cookies);
+  writeDB('instagram_cookies.json', clean);
+  res.json({ ok: true, count: clean.length });
 });
 
 // Diagnostic: verify cookies actually work against Instagram right now
