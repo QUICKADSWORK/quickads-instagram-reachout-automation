@@ -1893,15 +1893,54 @@ app.get('/api/extension/download', (req, res) => {
     if (!fs.existsSync(extDir)) {
       return res.status(404).json({ error: 'Extension folder not found on the server.' });
     }
-    // Only ship the files the extension actually needs.
-    const wanted = ['manifest.json', 'popup.html', 'popup.js', 'README.md'];
+    // Ship everything in the folder rather than a hardcoded list — a list
+    // silently goes stale the moment a new script is added, producing a zip
+    // whose manifest points at files that aren't in it.
     const files = [];
-    for (const name of wanted) {
-      const p = path.join(extDir, name);
-      if (fs.existsSync(p)) files.push({ name, data: fs.readFileSync(p) });
-    }
+    const walk = (dir, prefix = '') => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        const rel = prefix + entry.name;
+        if (entry.isDirectory()) walk(full, rel + '/');
+        else if (entry.isFile()) files.push({ name: rel, data: fs.readFileSync(full) });
+      }
+    };
+    walk(extDir);
+
     if (!files.length) {
       return res.status(404).json({ error: 'No extension files available to package.' });
+    }
+
+    // Guard: every file the manifest references must actually be in the zip,
+    // otherwise Chrome refuses to load it with a confusing error.
+    const manifestFile = files.find(f => f.name === 'manifest.json');
+    if (!manifestFile) {
+      return res.status(500).json({ error: 'extension/manifest.json is missing.' });
+    }
+    try {
+      const manifest = JSON.parse(manifestFile.data.toString('utf8'));
+      const referenced = new Set();
+      const add = (v) => { if (typeof v === 'string' && /\.(js|html|css|png|json)$/i.test(v)) referenced.add(v); };
+      add(manifest.background?.service_worker);
+      add(manifest.action?.default_popup);
+      for (const cs of manifest.content_scripts || []) {
+        (cs.js || []).forEach(add);
+        (cs.css || []).forEach(add);
+      }
+      Object.values(manifest.icons || {}).forEach(add);
+
+      const have = new Set(files.map(f => f.name));
+      const missing = Array.from(referenced).filter(r => !have.has(r));
+      if (missing.length) {
+        console.error('extension package is incomplete, missing:', missing);
+        return res.status(500).json({
+          error: `The extension package is incomplete on the server (missing: ${missing.join(', ')}). ` +
+                 `Redeploy so these files are present in the extension/ folder.`,
+        });
+      }
+    } catch (err) {
+      return res.status(500).json({ error: `extension/manifest.json is not valid JSON: ${err.message}` });
     }
     const zip = buildZip(files);
     res.setHeader('Content-Type', 'application/zip');
