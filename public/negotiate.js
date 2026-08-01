@@ -734,17 +734,30 @@
     }
     if (el) { el.className = cls; el.textContent = msg; }
     if (top) { top.className = cls; top.textContent = msg; }
+
+    // Keep the 3-step checklist in sync with the real connection state.
+    if (typeof renderConnectChecklist === 'function') {
+      renderConnectChecklist(!!(data.hasCookies && data.valid));
+    }
   }
 
   $('#btnSettings').addEventListener('click', () => {
     $('#settingsOverlay').style.display = 'flex';
     const origin = $('#appOrigin');
     if (origin) origin.textContent = window.location.origin;
+    renderConnectChecklist(false);   // paint immediately, then refine
+    toExtension({ type: 'QUICKADS_REQUEST_STATUS' });
     checkCookies();
+    checkHostedAvailable();
   });
 
   $('#settingsClose').addEventListener('click', () => {
     $('#settingsOverlay').style.display = 'none';
+    // Don't leave a hosted browser session running in the background.
+    if (typeof closeHostedFrame === 'function' && $('#hostedFrameWrap')?.style.display === 'block') {
+      closeHostedFrame();
+      fetch('/api/settings/browser-login/cancel', { method: 'POST' }).catch(() => {});
+    }
   });
 
   const btnTestCookies = $('#btnTestCookies');
@@ -768,6 +781,248 @@
       }
     });
   }
+
+  // ── Browser helper (extension) auto-detect + connect ──
+  // The helper injects a bridge into this page. It tells us it's installed and
+  // whether Instagram is logged in, then hands over the cookies on request —
+  // which we save same-origin, so there's no code or URL to type.
+
+  const ext = { installed: false, loggedIn: false, version: null, connected: false };
+
+  function setCheck(id, state, title, sub, showAction) {
+    const el = $('#' + id);
+    if (!el) return;
+    const colors = { ok: '#2ec27e', warn: '#c3f53c', bad: '#ff5a5a', idle: '#55556a' };
+    el.querySelector('.chk-dot').style.background = colors[state] || colors.idle;
+    el.querySelector('.chk-title').textContent = title;
+    el.querySelector('.chk-sub').textContent = sub || '';
+    const action = el.querySelector('.chk-action');
+    if (action) action.style.display = showAction ? 'block' : 'none';
+  }
+
+  function toExtension(payload) {
+    window.postMessage({ source: 'quickads-page', ...payload }, window.location.origin);
+  }
+
+  function renderConnectChecklist(cookiesOk) {
+    // Step 1 — helper installed?
+    if (ext.installed) {
+      setCheck('chkExt', 'ok', 'Step 1 — Helper installed ✓',
+        'QuickAds helper v' + (ext.version || '?') + ' is active in this browser.', false);
+    } else {
+      setCheck('chkExt', 'bad', 'Step 1 — Helper not installed',
+        'Add it to Chrome or Edge, then refresh this page.', true);
+    }
+
+    // Step 2 — Instagram logged in?
+    if (!ext.installed) {
+      setCheck('chkIg', 'idle', 'Step 2 — Instagram login', 'Waiting for the helper.', false);
+    } else if (ext.loggedIn) {
+      setCheck('chkIg', 'ok', 'Step 2 — Logged into Instagram ✓',
+        'A live Instagram session was found in this browser.', false);
+    } else {
+      setCheck('chkIg', 'warn', 'Step 2 — Log into Instagram',
+        'Open Instagram and log in with the account you want to use, then come back.', true);
+    }
+
+    // Step 3 — connected?
+    if (cookiesOk) {
+      setCheck('chkConn', 'ok', 'Step 3 — Connected ✓', 'QuickAds can send DMs from your account.', false);
+      $('#readyBanner').style.display = 'block';
+      $('#readyBannerSub').textContent = ext.loggedIn
+        ? 'Instagram session saved. You can start your outreach.'
+        : 'Instagram session saved.';
+    } else {
+      $('#readyBanner').style.display = 'none';
+      if (ext.installed && ext.loggedIn) {
+        setCheck('chkConn', 'warn', 'Step 3 — Ready to connect',
+          'Press Connect and your Instagram session is saved automatically.', true);
+      } else {
+        setCheck('chkConn', 'idle', 'Step 3 — Connect', 'Finish the steps above first.', false);
+      }
+    }
+  }
+
+  // Messages coming back from the helper.
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window || event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (!data || data.source !== 'quickads-extension') return;
+
+    if (data.type === 'QUICKADS_EXT_STATUS') {
+      ext.installed = true;
+      ext.version = data.version;
+      ext.loggedIn = !!data.loggedIn;
+      checkCookies();
+    }
+
+    if (data.type === 'QUICKADS_EXT_AUTOCONNECT') {
+      // Arrived here from the "Connect" button on Instagram — show Settings so
+      // the user actually sees the result instead of it happening invisibly.
+      showToast('Connecting your Instagram…');
+      const overlay = $('#settingsOverlay');
+      if (overlay) {
+        overlay.style.display = 'flex';
+        const origin = $('#appOrigin');
+        if (origin) origin.textContent = window.location.origin;
+        renderConnectChecklist(false);
+        checkHostedAvailable();
+      }
+    }
+
+    if (data.type === 'QUICKADS_EXT_ERROR') {
+      showToast(data.error || 'The helper could not connect.', 7000);
+      if (data.needsLogin) { ext.loggedIn = false; renderConnectChecklist(false); }
+      const btn = $('#btnExtConnect');
+      if (btn) { btn.disabled = false; btn.textContent = 'Connect Instagram'; }
+    }
+
+    // The helper handed us the cookies — save them same-origin.
+    if (data.type === 'QUICKADS_EXT_COOKIES' && Array.isArray(data.cookies)) {
+      try {
+        const res = await fetch('/api/settings/cookies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cookies: data.cookies }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (res.ok) {
+          ext.connected = true;
+          toExtension({ type: 'QUICKADS_CONNECTED' });
+          showToast('✓ Instagram connected — ready for outreach', 5000);
+          checkCookies();
+        } else {
+          showToast(out.error || 'Could not save the Instagram session.', 7000);
+        }
+      } catch (err) {
+        showToast('Could not save the session: ' + err.message, 7000);
+      } finally {
+        const btn = $('#btnExtConnect');
+        if (btn) { btn.disabled = false; btn.textContent = 'Connect Instagram'; }
+      }
+    }
+  });
+
+  const btnExtConnect = $('#btnExtConnect');
+  if (btnExtConnect) {
+    btnExtConnect.addEventListener('click', () => {
+      btnExtConnect.disabled = true;
+      btnExtConnect.textContent = 'Connecting…';
+      toExtension({ type: 'QUICKADS_REQUEST_CONNECT' });
+      // Re-enable if the helper never answers.
+      setTimeout(() => {
+        if (btnExtConnect.disabled) {
+          btnExtConnect.disabled = false;
+          btnExtConnect.textContent = 'Connect Instagram';
+        }
+      }, 15000);
+    });
+  }
+
+  const btnRecheck = $('#btnRecheck');
+  if (btnRecheck) {
+    btnRecheck.addEventListener('click', () => {
+      toExtension({ type: 'QUICKADS_REQUEST_STATUS' });
+      checkCookies();
+      showToast('Re-checking…', 1500);
+    });
+  }
+
+  // ── Hosted browser login (Browserbase) ────────────────
+  let hostedPoll = null;
+
+  async function checkHostedAvailable() {
+    try {
+      const s = await fetch('/api/settings/browser-login/status').then(r => r.json());
+      if (s.configured) {
+        $('#hostedCard').style.display = 'block';
+        $('#hostedSetupNote').style.display = 'none';
+        $('#extHeading').textContent = 'Or connect with the browser helper (3 steps):';
+      } else {
+        $('#hostedCard').style.display = 'none';
+        $('#hostedSetupNote').style.display = 'block';
+        $('#hostedSetupNote').innerHTML =
+          'Tip: you can skip the helper install entirely by setting <code>' +
+          (s.missing || []).join('</code> and <code>') +
+          '</code> in your server settings — then Instagram login happens right inside this app.';
+        $('#extHeading').textContent = 'Connect with the browser helper (3 steps):';
+      }
+    } catch (_) {}
+  }
+
+  function stopHostedPoll() {
+    if (hostedPoll) { clearInterval(hostedPoll); hostedPoll = null; }
+  }
+
+  function closeHostedFrame() {
+    stopHostedPoll();
+    $('#hostedFrameWrap').style.display = 'none';
+    $('#hostedFrame').src = 'about:blank';
+    $('#btnHostedLogin').disabled = false;
+    $('#btnHostedLogin').textContent = 'Log in to Instagram';
+  }
+
+  const btnHostedLogin = $('#btnHostedLogin');
+  if (btnHostedLogin) {
+    btnHostedLogin.addEventListener('click', async () => {
+      btnHostedLogin.disabled = true;
+      btnHostedLogin.textContent = 'Opening…';
+      $('#hostedMsg').textContent = 'Starting a secure browser…';
+      try {
+        const res = await fetch('/api/settings/browser-login/start', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.liveViewUrl) {
+          $('#hostedMsg').textContent = data.error || 'Could not open the login window.';
+          btnHostedLogin.disabled = false;
+          btnHostedLogin.textContent = 'Log in to Instagram';
+          return;
+        }
+        $('#hostedFrame').src = data.liveViewUrl;
+        $('#hostedFrameWrap').style.display = 'block';
+        $('#hostedMsg').textContent = 'Waiting for you to log in…';
+        btnHostedLogin.textContent = 'Login window open';
+
+        // Poll until the session cookies appear, then finish automatically.
+        stopHostedPoll();
+        hostedPoll = setInterval(async () => {
+          try {
+            const r = await fetch('/api/settings/browser-login/capture', { method: 'POST' });
+            const d = await r.json();
+            if (d.ok && d.ready) {
+              closeHostedFrame();
+              $('#hostedMsg').textContent = '✓ Instagram connected!';
+              showToast('Instagram connected', 5000);
+              checkCookies();
+            } else if (!r.ok && d.error) {
+              $('#hostedMsg').textContent = d.error;
+              stopHostedPoll();
+            }
+          } catch (_) {}
+        }, 4000);
+      } catch (err) {
+        $('#hostedMsg').textContent = 'Error: ' + err.message;
+        btnHostedLogin.disabled = false;
+        btnHostedLogin.textContent = 'Log in to Instagram';
+      }
+    });
+  }
+
+  const btnHostedCancel = $('#btnHostedCancel');
+  if (btnHostedCancel) {
+    btnHostedCancel.addEventListener('click', async () => {
+      closeHostedFrame();
+      $('#hostedMsg').textContent = '';
+      try { await fetch('/api/settings/browser-login/cancel', { method: 'POST' }); } catch (_) {}
+    });
+  }
+
+  // Browserbase posts this when the live view drops its connection.
+  window.addEventListener('message', (e) => {
+    if (e.data === 'browserbase-disconnected') {
+      $('#hostedMsg').textContent = 'The login window disconnected. Click "Log in to Instagram" to try again.';
+      closeHostedFrame();
+    }
+  });
 
   // ── Extension install steps toggle ────────────────────
   const toggleInstallSteps = $('#toggleInstallSteps');

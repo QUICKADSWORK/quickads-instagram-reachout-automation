@@ -1,45 +1,70 @@
-# QuickAds — Instagram Connect (browser extension)
+# QuickAds — Instagram Connect (browser helper)
 
-A tiny Chrome/Edge extension that auto-imports your Instagram session into the
-QuickAds Reachout app, so you don't have to manually export and paste cookies.
+A small Chrome/Edge extension that connects your logged-in Instagram session to
+your QuickAds app. It reads **only** the three cookies the app needs —
+`sessionid`, `ds_user_id`, `csrftoken` — and nothing else.
 
-It reads **only** the three cookies the app needs — `sessionid`, `ds_user_id`,
-and `csrftoken` — and sends them to your app over a one-time pairing code.
-Nothing else is read, stored, or transmitted.
+No pairing code. No app address to type. Once it's installed, the app detects
+it and everything is one click.
 
 ## Get it
 
-- **From the app (easiest):** open **Negotiate → Settings → Connect Instagram**
-  and click **Download Extension (.zip)**, then unzip it.
-- **From source:** just use this `extension/` folder directly.
+- **From the app:** Negotiate → Settings → **Download helper**, then unzip.
+- **From source:** use this `extension/` folder directly.
 
-## Install (load unpacked)
+## Install (one time)
 
 1. Open `chrome://extensions` (or `edge://extensions`).
 2. Turn on **Developer mode** (top-right).
-3. Click **Load unpacked** and select this folder (the unzipped one, or this
-   `extension/` folder).
-4. Pin the "QuickAds — Instagram Connect" extension for easy access.
+3. Click **Load unpacked** and choose the unzipped folder.
+4. Refresh your QuickAds page — Step 1 turns green automatically.
 
-## Publishing to a store (optional)
+## How it works
 
-- **Chrome Web Store** — one-time $5 developer registration; upload this
-  folder zipped. Gives users one-click install + auto-updates.
-- **Edge Add-ons** — free registration; same package (Edge is Chromium).
+The Settings screen shows a live 3-step checklist that updates itself:
 
-## Use
+| Step | What it detects |
+|---|---|
+| 1. Helper installed | The extension injects a bridge into the app page, which reports its version |
+| 2. Instagram login | The extension checks for a live Instagram session in your browser |
+| 3. Connect | One click — cookies are read and saved, then it shows "ready for outreach" |
 
-1. Make sure you're **logged into Instagram** in the same browser.
-2. In the QuickAds app, open **Settings → Connect Instagram** and click
-   **Generate pairing code** — you'll get a 6-digit code (valid 10 minutes).
-3. Click the extension icon. Enter:
-   - **Your app URL** (e.g. `https://your-app.onrender.com`)
-   - **The pairing code**
-4. Click **Connect Instagram**. Done — the app now has your session.
+**Two ways to connect, both automatic:**
 
-## Why an extension?
+- **From the app** — when both steps are green, press **Connect Instagram**.
+- **From Instagram** — after you log into instagram.com, a small QuickAds card
+  appears in the corner: *"Connect this account so QuickAds can send your DMs."*
+  Press **Connect Instagram** and it switches to your app tab and finishes there.
 
-Instagram's `sessionid` cookie is `httpOnly`, so no in-page script (or
-bookmarklet) can read it. A browser extension with the `cookies` permission is
-the only client-side way to read it securely — which is exactly what this does,
-limited to the instagram.com domain.
+The first time you connect, the browser asks you to approve the site
+(`Allow the QuickAds helper to send your Instagram login to <your app>?`).
+That's a safety check so a random website can't ask for your session — approve
+it once and it never asks again for that site.
+
+## Why no pairing code anymore
+
+The bridge runs *inside* your app page, so it hands the cookies to the page and
+the page saves them with a normal same-origin request. Nothing crosses an
+untrusted boundary, so there's no code to copy and no URL to enter.
+
+## Custom domains
+
+The helper works out of the box on `localhost` and `*.onrender.com`. If your app
+is on your own domain, open the helper's popup while on that page and press
+**"Use this site as my QuickAds app"** — it will ask for permission and enable
+itself there.
+
+## Files
+
+| File | Role |
+|---|---|
+| `manifest.json` | Permissions and content-script matches |
+| `background.js` | Reads cookies, remembers your app address, drives the badge |
+| `app-bridge.js` | Runs on the QuickAds page; reports status, hands over cookies |
+| `ig-prompt.js` | Runs on instagram.com; shows the connect card after login |
+| `popup.html/js` | Status panel and fallback connect button |
+
+## Publishing (optional)
+
+Zipping this folder is also what you'd upload to the Chrome Web Store
+(one-time $5 developer fee) for one-click installs and auto-updates.

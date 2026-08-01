@@ -1970,6 +1970,222 @@ function resolveChromiumPath() {
   return (_chromiumPathCache = found || null);
 }
 
+// ── Auto-connect: hosted browser login (Browserbase) ───────
+// Runs a real Chrome on Browserbase's infrastructure (residential IP),
+// streams it into the app so the user can log into Instagram themselves,
+// then reads the session cookies straight out of that browser. No extension
+// to install, and no Chromium needed on this server — connectOverCDP talks to
+// the remote browser, so this works even where the local headless login can't.
+
+const BROWSERBASE_API = process.env.BROWSERBASE_API_URL || 'https://api.browserbase.com/v1';
+const BB_STATE_FILE = 'browserbase.json';
+
+function bbConfig() {
+  return {
+    apiKey: process.env.BROWSERBASE_API_KEY || '',
+    projectId: process.env.BROWSERBASE_PROJECT_ID || '',
+  };
+}
+
+async function bbFetch(pathname, options = {}) {
+  const { apiKey } = bbConfig();
+  const res = await fetch(BROWSERBASE_API + pathname, {
+    ...options,
+    headers: {
+      'X-BB-API-Key': apiKey,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+  const text = await res.text();
+  let body;
+  try { body = JSON.parse(text); } catch (_) { body = text; }
+  if (!res.ok) {
+    const msg = (body && (body.message || body.error)) || String(text).slice(0, 300);
+    const err = new Error(`Browserbase error (${res.status}): ${msg}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+// A Browserbase "context" stores the browser profile, so a login done once can
+// be reused by later sessions instead of signing in again.
+async function bbGetOrCreateContext() {
+  const { projectId } = bbConfig();
+  const state = readDB(BB_STATE_FILE, {});
+  if (state && state.contextId) return state.contextId;
+  const ctx = await bbFetch('/contexts', {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
+  writeDB(BB_STATE_FILE, { ...(state || {}), contextId: ctx.id });
+  return ctx.id;
+}
+
+// Currently-open login session (only one at a time).
+let bbSession = null;
+
+async function bbConnect(connectUrl) {
+  let playwright;
+  try { playwright = require('playwright'); }
+  catch (_) {
+    try { playwright = require('playwright-core'); } catch (_) {
+      const err = new Error('The "playwright" package is not installed on this server, which is needed to read cookies from the hosted browser.');
+      err.code = 'PLAYWRIGHT_MISSING';
+      throw err;
+    }
+  }
+  return playwright.chromium.connectOverCDP(connectUrl);
+}
+
+app.get('/api/settings/browser-login/status', (req, res) => {
+  const { apiKey, projectId } = bbConfig();
+  res.json({
+    configured: !!(apiKey && projectId),
+    missing: [!apiKey && 'BROWSERBASE_API_KEY', !projectId && 'BROWSERBASE_PROJECT_ID'].filter(Boolean),
+    active: !!bbSession,
+    sessionId: bbSession?.id || null,
+  });
+});
+
+// Open a hosted browser on the Instagram login page and hand back a URL the
+// frontend can show in an iframe.
+app.post('/api/settings/browser-login/start', async (req, res) => {
+  const { apiKey, projectId } = bbConfig();
+  if (!apiKey || !projectId) {
+    return res.status(400).json({
+      error: 'Hosted browser login is not set up. Add BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID in your server environment.',
+      code: 'NOT_CONFIGURED',
+    });
+  }
+
+  try {
+    const contextId = await bbGetOrCreateContext();
+
+    const session = await bbFetch('/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        // persist: keep the signed-in profile for next time.
+        browserSettings: { context: { id: contextId, persist: true } },
+        // Residential IPs — Instagram frequently blocks datacenter logins.
+        proxies: true,
+        keepAlive: true,
+      }),
+    });
+
+    // Try to drop the remote browser on the Instagram login page. If this
+    // fails the session is still perfectly usable — the user can navigate in
+    // the live view themselves — so don't throw the session away over it.
+    // (Closing a CDP connection only disconnects; the remote browser lives on,
+    // which is also why keepAlive is set above.)
+    let navigated = false;
+    let navError = null;
+    let browser;
+    try {
+      browser = await bbConnect(session.connectUrl);
+      const context = browser.contexts()[0] || (await browser.newContext());
+      const page = context.pages()[0] || (await context.newPage());
+      await page.goto('https://www.instagram.com/accounts/login/', {
+        waitUntil: 'domcontentloaded', timeout: 45000,
+      });
+      navigated = true;
+    } catch (err) {
+      if (err.code === 'PLAYWRIGHT_MISSING') {
+        await bbFetch(`/sessions/${session.id}`, {
+          method: 'POST', body: JSON.stringify({ projectId, status: 'REQUEST_RELEASE' }),
+        }).catch(() => {});
+        return res.status(501).json({ error: err.message, code: err.code });
+      }
+      navError = err.message;
+      console.error('browserbase navigation warning:', err.message);
+    } finally {
+      try { if (browser) await browser.close(); } catch (_) {}
+    }
+
+    const debugInfo = await bbFetch(`/sessions/${session.id}/debug`);
+    bbSession = { id: session.id, connectUrl: session.connectUrl, contextId, startedAt: Date.now() };
+
+    res.json({
+      ok: true,
+      sessionId: session.id,
+      liveViewUrl: debugInfo.debuggerFullscreenUrl || debugInfo.debuggerUrl,
+      navigated,
+      message: navigated
+        ? 'Log into Instagram in the window below.'
+        : 'Browser ready — open instagram.com in the window below and log in.',
+      ...(navError ? { warning: `Could not auto-open Instagram: ${navError}` } : {}),
+    });
+  } catch (err) {
+    console.error('browserbase start error:', err);
+    res.status(err.status === 401 ? 401 : 500).json({
+      error: err.status === 401
+        ? 'Browserbase rejected the API key. Check BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.'
+        : err.message,
+    });
+  }
+});
+
+// Poll while the user logs in: returns ready:false until the session cookies
+// show up, then saves them.
+app.post('/api/settings/browser-login/capture', async (req, res) => {
+  if (!bbSession) {
+    return res.status(400).json({ error: 'No hosted browser session is open. Click Connect to start one.' });
+  }
+
+  let browser;
+  try {
+    browser = await bbConnect(bbSession.connectUrl);
+    const context = browser.contexts()[0];
+    const raw = context ? await context.cookies() : [];
+    const igCookies = raw.filter(c => String(c.domain || '').includes('instagram'));
+    const filtered = filterRequiredCookies(igCookies);
+    const check = validateCookies(filtered);
+
+    if (!check.ok) {
+      return res.json({ ready: false, message: 'Waiting for you to finish logging in…' });
+    }
+
+    writeDB('instagram_cookies.json', filtered);
+    res.json({ ok: true, ready: true, count: filtered.length, message: 'Instagram connected.' });
+
+    // Release the session in the background; the login itself is saved to the
+    // persistent context, so next time can reuse it.
+    const sessionId = bbSession.id;
+    bbSession = null;
+    setImmediate(async () => {
+      try {
+        await bbFetch(`/sessions/${sessionId}`, {
+          method: 'POST',
+          body: JSON.stringify({ projectId: bbConfig().projectId, status: 'REQUEST_RELEASE' }),
+        });
+      } catch (_) {}
+    });
+  } catch (err) {
+    if (err.code === 'PLAYWRIGHT_MISSING') {
+      return res.status(501).json({ error: err.message, code: err.code });
+    }
+    res.status(502).json({ error: `Could not read cookies from the hosted browser: ${err.message}` });
+  } finally {
+    try { if (browser) await browser.close(); } catch (_) {}
+  }
+});
+
+app.post('/api/settings/browser-login/cancel', async (req, res) => {
+  if (!bbSession) return res.json({ ok: true });
+  const sessionId = bbSession.id;
+  bbSession = null;
+  try {
+    await bbFetch(`/sessions/${sessionId}`, {
+      method: 'POST',
+      body: JSON.stringify({ projectId: bbConfig().projectId, status: 'REQUEST_RELEASE' }),
+    });
+  } catch (_) {}
+  res.json({ ok: true });
+});
+
 // ── Auto-import: headless login ────────────────────────────
 // Logs into Instagram with a real headless Chromium (Playwright) and
 // captures the session cookies. Playwright is an optional dependency and

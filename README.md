@@ -7,7 +7,7 @@ Discover Instagram influencers, send DMs, and let an AI agent negotiate paid col
 - **Influencer Discovery** — Find influencers by seed accounts, follower range, and niche using Apify
 - **Influencer Analytics** — Avg views, avg likes, engagement rate, follower ratio, and posting frequency computed per creator
 - **AI Brand-Fit Scoring** — Describe your brand once; Claude scores each influencer 0–100 for fit, with reasoning and red flags
-- **Connect Instagram (auto)** — Import your Instagram session automatically via a **browser extension** or **headless login**, or paste cookies manually
+- **Connect Instagram (auto)** — A browser helper detects itself, detects your Instagram login, and connects in one click — no pairing code, no URL. Hosted-browser login and manual paste available as fallbacks
 - **Bulk DM Outreach** — Send personalized first DMs to all discovered creators
 - **AI Negotiation Agent** — Claude AI handles the full deal negotiation via Instagram DMs
 - **Autopilot Mode** — Automatically reads creator replies, generates smart responses, and sends them back
@@ -54,22 +54,40 @@ error) with a CSV export. Everything is stored on disk in `DATA_DIR`:
 
 ## Connecting Instagram
 
-DM sending needs your Instagram session, which you connect with the free
-**QuickAds helper** browser extension. Open **Negotiate → Settings → Connect
-Instagram** and follow the 3 on-screen steps:
+DM sending needs your Instagram session. Open **Negotiate → Settings → Connect
+Instagram** — you'll see a live 3-step checklist that fills itself in.
 
-1. **Add the helper to your browser** — click **Download helper**, unzip it, and
-   load it in Chrome/Edge (`chrome://extensions` → turn on Developer mode → Load
-   unpacked → pick the folder). One time only.
-2. **Log into Instagram** in the same browser.
-3. **Get your code and connect** — click **Get my code**, then open the helper,
-   enter your app address + the code, and press Connect.
+### Recommended — the browser helper
 
-The helper reads only the 3 required cookies (`sessionid`, `ds_user_id`,
-`csrftoken`) from your logged-in session and sends them to the app. Use
-**Check connection** to confirm it worked. (For a true one-click install with
-auto-updates, the same `extension/` folder can be published to the Chrome Web
-Store — one-time $5 developer fee.)
+1. **Install the helper** — click **Download helper**, unzip it, then in Chrome
+   or Edge open `chrome://extensions` → turn on **Developer mode** → **Load
+   unpacked** → pick the folder. Refresh the app and Step 1 turns green by
+   itself.
+2. **Log into Instagram** in the same browser. Step 2 turns green
+   automatically — no refresh needed, just press **Re-check** if you're quick.
+3. **Connect** — press **Connect Instagram**. The cookies are read and saved,
+   and the app shows **"✓ Connected to Instagram — ready for outreach"**.
+
+There is **no pairing code and no app address to type**. The helper injects a
+bridge into the app page, so the page saves the session with a normal
+same-origin request. The first connect asks you to approve the site once, so a
+random website can't request your Instagram session.
+
+**Or connect from Instagram:** after you log in on instagram.com, a QuickAds
+card appears in the corner offering to connect that account. Press it and the
+app finishes the job by itself.
+
+See `extension/README.md` for details and custom-domain setup.
+
+### Other ways to connect
+
+Under **Other ways to connect** in Settings:
+
+- **Hosted browser login** — set `BROWSERBASE_API_KEY` and
+  `BROWSERBASE_PROJECT_ID` and an Instagram login window opens inside the app
+  (a real Chrome on Browserbase with a residential IP). Nothing to install, but
+  it's a paid service.
+- **Pairing code** — the manual fallback if the helper can't reach the page.
 
 ## How It Works
 
@@ -165,6 +183,10 @@ Open **http://localhost:3000** in your browser.
 ### Connect Instagram
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/settings/browser-login/status` | Whether hosted browser login is configured |
+| POST | `/api/settings/browser-login/start` | Open a hosted browser on the IG login page |
+| POST | `/api/settings/browser-login/capture` | Poll for the session cookies and save them |
+| POST | `/api/settings/browser-login/cancel` | Release the hosted browser session |
 | GET | `/api/settings/pair` | Mint a one-time pairing code for the extension |
 | POST | `/api/settings/cookies/import` | Extension posts cookies here with the code |
 | POST | `/api/settings/cookies/apify-login` | Log in via an Apify actor; stores returned cookies |

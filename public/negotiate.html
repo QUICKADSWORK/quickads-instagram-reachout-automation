@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="quickads-app" content="1" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>InfluencerFind — AI Negotiation Agent</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -346,44 +347,101 @@
         <h3 style="margin:0 0 6px;font-size:15px;">Connect Instagram</h3>
         <div id="connectStatus" class="cookie-status" style="margin-bottom:14px;"></div>
 
-        <p class="modal-hint" style="margin:0 0 14px;">Connect your Instagram so QuickAds can send DMs for you. Just 3 quick steps — about a minute, no coding needed.</p>
+        <p class="modal-hint" style="margin:0 0 14px;">Connect your Instagram so QuickAds can send DMs for you.</p>
 
-        <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <div style="font-weight:700;margin-bottom:6px;"><span style="background:var(--accent,#c3f53c);color:#0f1115;border-radius:50%;padding:1px 9px;margin-right:8px;">1</span>Add the QuickAds helper to your browser</div>
-          <p class="modal-hint" style="margin:0 0 10px;">Use Google Chrome or Microsoft Edge. Download the helper, then add it (one-time).</p>
-          <a href="/api/extension/download" class="btn btn-primary" download>⬇ Download helper</a>
-          <details style="margin-top:10px;">
-            <summary style="cursor:pointer;font-size:13px;">Show me how to add it (30 seconds)</summary>
-            <ol style="margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.7;">
-              <li>Unzip the file you just downloaded (right-click → Extract / Unzip).</li>
-              <li>Open a new browser tab and go to <b>chrome://extensions</b></li>
-              <li>Turn on <b>Developer mode</b> — the switch in the top-right corner.</li>
-              <li>Click <b>Load unpacked</b>, then choose the unzipped folder.</li>
-              <li>You'll now see "QuickAds — Instagram Connect" in your extensions. Done!</li>
-            </ol>
-          </details>
-        </div>
+        <!-- Live checklist — updates itself -->
+        <div style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:6px 4px;margin-bottom:14px;">
+          <div class="chk" id="chkExt" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;">
+            <span class="chk-dot" style="width:10px;height:10px;border-radius:50%;background:#55556a;margin-top:5px;flex:none;"></span>
+            <div style="min-width:0;flex:1;">
+              <div style="font-weight:600;font-size:13.5px;" class="chk-title">Step 1 — Checking for the QuickAds helper…</div>
+              <div class="chk-sub modal-hint" style="margin:2px 0 0;"></div>
+              <div class="chk-action" style="margin-top:8px;display:none;">
+                <a href="/api/extension/download" class="btn btn-primary btn-sm" download>⬇ Download helper</a>
+                <details style="margin-top:8px;">
+                  <summary style="cursor:pointer;font-size:12.5px;">How to add it (30 seconds)</summary>
+                  <ol style="margin:8px 0 0;padding-left:18px;font-size:12.5px;line-height:1.7;">
+                    <li>Unzip the file you downloaded.</li>
+                    <li>Open a new tab and go to <b>chrome://extensions</b></li>
+                    <li>Turn on <b>Developer mode</b> (top-right).</li>
+                    <li>Click <b>Load unpacked</b> and choose the unzipped folder.</li>
+                    <li>Come back here and refresh — this will tick green.</li>
+                  </ol>
+                </details>
+              </div>
+            </div>
+          </div>
 
-        <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <div style="font-weight:700;margin-bottom:6px;"><span style="background:var(--accent,#c3f53c);color:#0f1115;border-radius:50%;padding:1px 9px;margin-right:8px;">2</span>Log into Instagram</div>
-          <p class="modal-hint" style="margin:0;">In the same browser, open <a href="https://www.instagram.com" target="_blank" rel="noopener" style="color:var(--accent,#c3f53c);">instagram.com</a> and make sure you're logged into the account you want to use.</p>
-        </div>
+          <div class="chk" id="chkIg" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-top:1px solid rgba(255,255,255,0.05);">
+            <span class="chk-dot" style="width:10px;height:10px;border-radius:50%;background:#55556a;margin-top:5px;flex:none;"></span>
+            <div style="min-width:0;flex:1;">
+              <div style="font-weight:600;font-size:13.5px;" class="chk-title">Step 2 — Instagram login</div>
+              <div class="chk-sub modal-hint" style="margin:2px 0 0;"></div>
+              <div class="chk-action" style="margin-top:8px;display:none;">
+                <a href="https://www.instagram.com/accounts/login/" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Open Instagram &amp; log in</a>
+              </div>
+            </div>
+          </div>
 
-        <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin-bottom:12px;">
-          <div style="font-weight:700;margin-bottom:6px;"><span style="background:var(--accent,#c3f53c);color:#0f1115;border-radius:50%;padding:1px 9px;margin-right:8px;">3</span>Get your code and connect</div>
-          <p class="modal-hint" style="margin:0 0 10px;">Click <b>Get my code</b> below. Then click the QuickAds helper icon in your browser toolbar, enter the two things below, and press <b>Connect</b>.</p>
-          <div style="font-size:13px;margin-bottom:10px;">App address: <code id="appOrigin" style="padding:2px 8px;background:rgba(0,0,0,0.3);border-radius:6px;">this page's web address</code></div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-            <button id="btnGenPair" class="btn btn-primary" type="button">Get my code</button>
-            <code id="pairCode" style="font-size:20px;letter-spacing:3px;display:none;padding:4px 12px;background:rgba(0,0,0,0.3);border-radius:6px;"></code>
-            <span id="pairExpiry" class="modal-hint" style="margin:0;"></span>
+          <div class="chk" id="chkConn" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-top:1px solid rgba(255,255,255,0.05);">
+            <span class="chk-dot" style="width:10px;height:10px;border-radius:50%;background:#55556a;margin-top:5px;flex:none;"></span>
+            <div style="min-width:0;flex:1;">
+              <div style="font-weight:600;font-size:13.5px;" class="chk-title">Step 3 — Connect</div>
+              <div class="chk-sub modal-hint" style="margin:2px 0 0;"></div>
+              <div class="chk-action" style="margin-top:8px;display:none;">
+                <button id="btnExtConnect" class="btn btn-primary btn-sm" type="button">Connect Instagram</button>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;">
-          <button id="btnTestCookies" class="btn btn-outline" type="button">Check connection</button>
-          <span class="modal-hint" style="margin:0;">Confirm Instagram is connected.</span>
+        <div id="readyBanner" style="display:none;padding:12px 14px;border-radius:10px;margin-bottom:14px;
+             background:rgba(46,194,126,0.1);border:1px solid rgba(46,194,126,0.3);font-size:13.5px;">
+          <b>✓ Connected to Instagram — ready for outreach.</b>
+          <div class="modal-hint" id="readyBannerSub" style="margin:4px 0 0;"></div>
         </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+          <button id="btnTestCookies" class="btn btn-outline btn-sm" type="button">Check connection</button>
+          <button id="btnRecheck" class="btn btn-outline btn-sm" type="button">Re-check</button>
+        </div>
+
+        <!-- Fallbacks -->
+        <details style="margin-top:6px;">
+          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted,#8888a0);">Other ways to connect</summary>
+
+          <div id="hostedCard" class="connect-step" style="display:none;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin:10px 0;">
+            <div style="font-weight:700;margin-bottom:6px;">🔐 Log in through a hosted browser</div>
+            <p class="modal-hint" style="margin:0 0 10px;">Opens an Instagram login window inside this app. Useful if you can't install the helper.</p>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <button id="btnHostedLogin" class="btn btn-outline btn-sm" type="button">Log in to Instagram</button>
+              <span id="hostedMsg" class="modal-hint" style="margin:0;"></span>
+            </div>
+            <div id="hostedFrameWrap" style="display:none;margin-top:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap;">
+                <span class="modal-hint" style="margin:0;">This closes by itself once you're logged in.</span>
+                <button id="btnHostedCancel" class="btn btn-outline btn-sm" type="button">Cancel</button>
+              </div>
+              <iframe id="hostedFrame"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                allow="clipboard-read; clipboard-write"
+                style="width:100%;height:520px;border:1px solid var(--border,#222233);border-radius:10px;background:#000;"></iframe>
+            </div>
+          </div>
+
+          <div class="connect-step" style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px;margin:10px 0;">
+            <div style="font-weight:700;margin-bottom:6px;">🔢 Pairing code (manual)</div>
+            <p class="modal-hint" style="margin:0 0 10px;">Only needed if the helper can't reach this page automatically. Enter the app address and code in the helper's popup.</p>
+            <div style="font-size:13px;margin-bottom:10px;">App address: <code id="appOrigin" style="padding:2px 8px;background:rgba(0,0,0,0.3);border-radius:6px;">—</code></div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+              <button id="btnGenPair" class="btn btn-outline btn-sm" type="button">Get my code</button>
+              <code id="pairCode" style="font-size:18px;letter-spacing:3px;display:none;padding:4px 12px;background:rgba(0,0,0,0.3);border-radius:6px;"></code>
+              <span id="pairExpiry" class="modal-hint" style="margin:0;"></span>
+            </div>
+          </div>
+
+          <div id="hostedSetupNote" class="modal-hint" style="display:none;margin:10px 0 0;padding:10px 12px;border:1px dashed rgba(255,255,255,0.15);border-radius:10px;"></div>
+        </details>
 
       </div>
     </div>
