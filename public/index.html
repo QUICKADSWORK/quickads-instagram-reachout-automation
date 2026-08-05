@@ -349,6 +349,19 @@ Looking forward to hearing from you!</textarea>
           <p class="form-hint" id="bfScanHint" style="margin:6px 0 0;">
             We read your homepage (and your About page if we can find one) and draft the fields below. Nothing is saved until you press Save.
           </p>
+
+          <!-- Shown when a site blocks the read (Cloudflare etc.) or is JS-only -->
+          <div id="bfPasteWrap" style="display:none;margin-top:12px;">
+            <label for="bfPasteText" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">
+              Paste your text instead
+            </label>
+            <textarea id="bfPasteText" rows="5"
+              placeholder="Open your website, select the text on your homepage or About page, and paste it here. A few sentences on what you sell and who buys it is enough."></textarea>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+              <button type="button" id="btnScanText" class="btn btn-outline">Use this text</button>
+              <span class="form-hint" style="margin:0;">Works even when a firewall blocks the automatic read.</span>
+            </div>
+          </div>
         </div>
 
         <div id="bfScanReview" class="brand-scan-review" style="display:none;">
