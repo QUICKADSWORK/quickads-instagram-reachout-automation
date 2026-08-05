@@ -736,10 +736,16 @@
     if (top) { top.className = cls; top.textContent = msg; }
 
     // Keep the shared connect state (and therefore the checklist) in sync.
+    const nowConnected = !!(data.hasCookies && data.valid);
     if (window.QuickAdsIG) {
-      window.QuickAdsIG.state.connected = !!(data.hasCookies && data.valid);
+      if (window.QuickAdsIG.state.connected !== nowConnected) verifyResult = null;
+      window.QuickAdsIG.state.connected = nowConnected;
     }
     if (typeof renderConnectChecklist === 'function') renderConnectChecklist();
+    // Only worth asking Instagram if there's something stored to ask about —
+    // and only when a check isn't already running or answered, so this can't
+    // land on top of a forced re-check with a staler answer.
+    if (nowConnected && !verifyResult && !verifyInFlight) verifySession();
   }
 
   $('#btnSettings').addEventListener('click', () => {
@@ -798,6 +804,10 @@
     if (action) action.style.display = showAction ? 'block' : 'none';
   }
 
+  // Instagram's own answer about the stored session — null until we've asked.
+  let verifyResult = null;
+  let verifyInFlight = null;
+
   function renderConnectChecklist() {
     const st = (window.QuickAdsIG && window.QuickAdsIG.state) || {};
     const connected = !!st.connected;
@@ -826,16 +836,7 @@
       btn.textContent = st.busy ? 'Connecting…' : (connected ? 'Reconnect Instagram' : 'Connect Instagram');
     }
 
-    if (connected) {
-      setCheck('chkConn', 'ok', 'Step 3 — Connected ✓',
-        'QuickAds can send DMs from your account.',
-        // Keep the button available so an expired session can be refreshed.
-        !!(st.installed && st.loggedIn));
-      $('#readyBanner').style.display = 'block';
-      $('#readyBannerSub').textContent = st.loggedIn
-        ? 'Instagram session saved. You can start your outreach.'
-        : 'Instagram session saved, but this browser is no longer logged in — reconnect if DMs start failing.';
-    } else {
+    if (!connected) {
       $('#readyBanner').style.display = 'none';
       if (st.installed && st.loggedIn) {
         setCheck('chkConn', 'warn', 'Step 3 — Ready to connect',
@@ -843,11 +844,77 @@
       } else {
         setCheck('chkConn', 'idle', 'Step 3 — Connect', 'Finish the steps above first.', false);
       }
+      return;
     }
+
+    // A saved session lives on the server, so DMs keep working even with the
+    // helper switched off — but "a file exists" is not proof it still works.
+    // v is the answer from Instagram itself.
+    const v = verifyResult;
+    const helperNote = st.installed
+      ? ''
+      : ' The helper is only needed to connect, so DMs keep working without it.';
+
+    if (!v) {
+      setCheck('chkConn', 'warn', 'Step 3 — Checking your Instagram session…',
+        'Asking Instagram whether the saved session still works.', false);
+      $('#readyBanner').style.display = 'none';
+      return;
+    }
+
+    if (v.ok) {
+      setCheck('chkConn', 'ok', 'Step 3 — Connected ✓',
+        (v.username ? `Signed in as @${v.username}. ` : '') +
+        'Instagram accepted the saved session.' + helperNote,
+        !!(st.installed && st.loggedIn));
+      $('#readyBanner').style.display = 'block';
+      $('#readyBannerText').textContent = v.username
+        ? `✓ Connected as @${v.username} — ready for outreach.`
+        : '✓ Connected to Instagram — ready for outreach.';
+      $('#readyBannerSub').textContent = 'Instagram accepted the saved session.' + helperNote;
+      return;
+    }
+
+    if (v.state === 'expired') {
+      setCheck('chkConn', 'bad', 'Step 3 — Session expired',
+        v.error || 'Instagram no longer accepts this session.', true);
+      $('#readyBanner').style.display = 'none';
+      return;
+    }
+
+    // Couldn't reach Instagram — the session may well be fine, so don't send
+    // the user off to reconnect on the strength of a network blip.
+    setCheck('chkConn', 'warn', 'Step 3 — Saved, not verified',
+      (v.error || 'Could not check the session right now.') +
+      ' Your saved session is still in place.' + helperNote, false);
+    $('#readyBanner').style.display = 'block';
+    $('#readyBannerText').textContent = '✓ Instagram session saved';
+    $('#readyBannerSub').textContent = 'Could not reach Instagram to double-check it just now.';
+  }
+
+  // Ask Instagram whether the stored session actually works, then re-render.
+  // The server caches the answer for a minute so this stays cheap.
+  async function verifySession(force) {
+    if (verifyInFlight) return verifyInFlight;
+    verifyInFlight = (async () => {
+      try {
+        const res = await fetch('/api/settings/cookies/verify' + (force ? '?force=1' : ''));
+        verifyResult = await res.json();
+      } catch (err) {
+        verifyResult = { ok: false, state: 'unknown', error: 'Could not check the session right now.' };
+      } finally {
+        verifyInFlight = null;
+      }
+      renderConnectChecklist();
+      return verifyResult;
+    })();
+    return verifyInFlight;
   }
 
   if (window.QuickAdsIG) {
     window.QuickAdsIG.onChange = () => { renderConnectChecklist(); };
+    // A fresh session was just saved — the old verdict is stale.
+    window.QuickAdsIG.onConnected = () => { verifyResult = null; verifySession(true); };
     // Arrived from the Instagram banner — show Settings so the result is visible.
     window.QuickAdsIG.onAutoConnect = () => {
       const overlay = $('#settingsOverlay');
@@ -890,7 +957,11 @@
         window.QuickAdsIG.clearError();   // only mute on failures from *this* attempt
         window.QuickAdsIG.requestStatus();
       }
+      // An explicit re-check means "ask Instagram now", not "show me the
+      // answer from a minute ago".
+      verifyResult = null;
       checkCookies();
+      verifySession(true);
       cancelRecheckToast();
       recheckTimer = setTimeout(() => {
         recheckTimer = null;

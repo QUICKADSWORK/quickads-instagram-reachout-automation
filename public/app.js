@@ -443,51 +443,77 @@
     }
   }
 
+  const bfPasteWrap = $('#bfPasteWrap');
+  const bfPasteText = $('#bfPasteText');
+  const btnScanText = $('#btnScanText');
+
+  // Shared by both routes: draft from a URL, or from text the user pasted.
+  async function runScan({ url, text }, button, busyLabel, idleLabel) {
+    preScanSnapshot = readBrandForm();
+    button.disabled = true;
+    button.textContent = busyLabel;
+    brandSaveStatus.textContent = '';
+    bfScanReview.style.display = 'none';
+    try {
+      const res = await fetch('/api/brand-profile/scan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, text }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        brandSaveStatus.textContent = data.error || 'Could not read that site.';
+        // The site turned us away — offer the route that always works.
+        if (data.canPaste) {
+          bfPasteWrap.style.display = 'block';
+          bfPasteText.focus();
+        }
+        return;
+      }
+
+      writeBrandForm(data.profile, { markFilled: true });
+      if (data.profile.website) bfScanUrl.value = data.profile.website;
+
+      const low = data.confidence === 'low';
+      bfScanReview.className = 'brand-scan-review' + (low ? ' low' : '');
+      bfScanTitle.textContent = low
+        ? 'Draft ready — there was not much to go on, please check every field'
+        : 'Draft ready — review the fields below, then Save';
+      const pages = (data.pagesRead || []).length;
+      bfScanDetail.textContent = [
+        data.source === 'text' ? 'Drafted from the text you pasted.' : `Read ${pages} page${pages === 1 ? '' : 's'}.`,
+        data.notes,
+        'Nothing is saved until you press Save Brand Profile.',
+      ].filter(Boolean).join(' ');
+      bfScanReview.style.display = 'block';
+    } catch (err) {
+      brandSaveStatus.textContent = 'Could not read that site: ' + err.message;
+    } finally {
+      button.disabled = false;
+      button.textContent = idleLabel;
+    }
+  }
+
   if (btnScanSite) {
-    btnScanSite.addEventListener('click', async () => {
+    btnScanSite.addEventListener('click', () => {
       const url = (bfScanUrl.value || '').trim();
       if (!url) {
         brandSaveStatus.textContent = 'Paste your website address first.';
         bfScanUrl.focus();
         return;
       }
-      preScanSnapshot = readBrandForm();
-      btnScanSite.disabled = true;
-      btnScanSite.textContent = 'Reading your site…';
-      brandSaveStatus.textContent = '';
-      bfScanReview.style.display = 'none';
-      try {
-        const res = await fetch('/api/brand-profile/scan', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          brandSaveStatus.textContent = data.error || 'Could not read that site.';
-          return;
-        }
+      runScan({ url }, btnScanSite, 'Reading your site…', 'Scan Website');
+    });
+  }
 
-        writeBrandForm(data.profile, { markFilled: true });
-        if (data.profile.website) bfScanUrl.value = data.profile.website;
-
-        const low = data.confidence === 'low';
-        bfScanReview.className = 'brand-scan-review' + (low ? ' low' : '');
-        bfScanTitle.textContent = low
-          ? 'Draft ready — the site did not say much, please check every field'
-          : 'Draft ready — review the fields below, then Save';
-        const pages = (data.pagesRead || []).length;
-        bfScanDetail.textContent = [
-          `Read ${pages} page${pages === 1 ? '' : 's'}.`,
-          data.notes,
-          'Nothing is saved until you press Save Brand Profile.',
-        ].filter(Boolean).join(' ');
-        bfScanReview.style.display = 'block';
-      } catch (err) {
-        brandSaveStatus.textContent = 'Could not read that site: ' + err.message;
-      } finally {
-        btnScanSite.disabled = false;
-        btnScanSite.textContent = 'Scan Website';
+  if (btnScanText) {
+    btnScanText.addEventListener('click', () => {
+      const text = (bfPasteText.value || '').trim();
+      if (!text) {
+        brandSaveStatus.textContent = 'Paste some text from your website first.';
+        bfPasteText.focus();
+        return;
       }
+      runScan({ text, url: (bfScanUrl.value || '').trim() }, btnScanText, 'Reading…', 'Use this text');
     });
   }
 

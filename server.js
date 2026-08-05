@@ -645,43 +645,105 @@ async function assertPublicUrl(raw) {
   return u;
 }
 
+// Firewalls in front of marketing sites (Cloudflare and the like) reject
+// requests that don't look like a real browser, so send a complete header
+// set. If we're still turned away, try once as a plainly-identified crawler —
+// some WAFs allow those and block spoofed browsers.
+const FETCH_PROFILES = [
+  {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+  },
+  {
+    'User-Agent': 'QuickAdsBrandScan/1.0 (+https://quickads.ai; reads your own site to draft a brand profile)',
+    'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+  },
+];
+
+// A 403 from a firewall is worth another go with different headers; a 404 is
+// not going to change.
+const RETRY_STATUS = new Set([403, 406, 429, 503]);
+
+class PageFetchError extends Error {
+  constructor(message, { blocked = false, status = 0 } = {}) {
+    super(message);
+    this.blocked = blocked;
+    this.status = status;
+  }
+}
+
 // fetch() follows redirects on its own, which would skip the check above on
 // every hop after the first — so follow them by hand and re-check each one.
 async function fetchPage(url, timeoutMs = 12000) {
-  let current = url;
-  for (let hop = 0; hop < 5; hop++) {
-    const u = await assertPublicUrl(current);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let res;
-    try {
-      res = await fetch(u.href, {
-        redirect: 'manual',
-        signal: ctrl.signal,
-        headers: {
-          // Plenty of sites serve a stub to unknown clients.
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-      });
-    } finally {
-      clearTimeout(timer);
+  let lastBlock = null;
+
+  for (let profile = 0; profile < FETCH_PROFILES.length; profile++) {
+    let current = url;
+    let retryWithNextProfile = false;
+
+    for (let hop = 0; hop < 5 && !retryWithNextProfile; hop++) {
+      const u = await assertPublicUrl(current);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      let res;
+      try {
+        res = await fetch(u.href, {
+          redirect: 'manual',
+          signal: ctrl.signal,
+          headers: FETCH_PROFILES[profile],
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+        current = new URL(res.headers.get('location'), u.href).href;
+        continue;
+      }
+
+      if (RETRY_STATUS.has(res.status)) {
+        lastBlock = { status: res.status, host: u.hostname };
+        retryWithNextProfile = true;
+        continue;
+      }
+
+      if (!res.ok) {
+        throw new PageFetchError(
+          `The site returned ${res.status} ${res.statusText || ''}`.trim(), { status: res.status });
+      }
+
+      const type = res.headers.get('content-type') || '';
+      if (type && !/html|xml|text\/plain/i.test(type)) {
+        throw new PageFetchError('That link is not a web page.');
+      }
+      return { html: await res.text(), finalUrl: u.href };
     }
 
-    if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
-      current = new URL(res.headers.get('location'), u.href).href;
-      continue;
-    }
-    if (!res.ok) throw new Error(`The site returned ${res.status} ${res.statusText || ''}`.trim());
-
-    const type = res.headers.get('content-type') || '';
-    if (type && !/html|xml|text\/plain/i.test(type)) {
-      throw new Error('That link is not a web page.');
-    }
-    return { html: await res.text(), finalUrl: u.href };
+    if (!retryWithNextProfile) throw new PageFetchError('Too many redirects.');
   }
-  throw new Error('Too many redirects.');
+
+  const why = {
+    403: 'That is usually a firewall such as Cloudflare turning away servers, rather than anything wrong with your site.',
+    406: 'The site would not serve a plain page request.',
+    429: 'The site is rate-limiting us. Waiting a minute and trying again may work.',
+    503: 'The site is temporarily unavailable, or a firewall is challenging the request.',
+  }[lastBlock.status] || 'The site would not let us read it.';
+
+  throw new PageFetchError(
+    `${lastBlock.host} refused the request (HTTP ${lastBlock.status}). ${why} ` +
+    'Use "Paste your text instead" below, or fill the fields in by hand.',
+    { blocked: true, status: lastBlock.status });
 }
 
 // Pull out the parts of a page that actually describe a brand, and drop the
@@ -773,32 +835,53 @@ app.post('/api/brand-profile/scan', async (req, res) => {
     if (!CLAUDE_API_KEY) {
       return res.status(400).json({ error: 'CLAUDE_API_KEY is not set on the server.' });
     }
-    let url = String((req.body || {}).url || '').trim();
-    if (!url) return res.status(400).json({ error: 'Paste your website address first.' });
-    // Add https:// for a bare domain, but leave any scheme the user typed
-    // alone so assertPublicUrl can reject it with a message that makes sense.
-    if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url;
+    const body = req.body || {};
+    const pasted = String(body.text || '').trim();
+    let url = String(body.url || '').trim();
 
     const pagesRead = [];
-    const home = await fetchPage(url);
-    pagesRead.push(home.finalUrl);
-    const parts = [{ url: home.finalUrl, ...extractPageText(home.html) }];
+    let parts;
+    let sourceUrl = '';
 
-    // An About page is a bonus, never a reason to fail.
-    const aboutUrl = findAboutLink(home.html, home.finalUrl);
-    if (aboutUrl) {
-      try {
-        const about = await fetchPage(aboutUrl, 8000);
-        pagesRead.push(about.finalUrl);
-        parts.push({ url: about.finalUrl, ...extractPageText(about.html) });
-      } catch (_) {}
-    }
+    if (pasted) {
+      // Escape hatch for sites behind a firewall, or built entirely in JS:
+      // the user pastes their own copy and we structure that instead.
+      if (pasted.length < 120) {
+        return res.status(400).json({
+          error: 'That is too short to work with. Paste a few sentences about your brand — what you sell and who you sell it to.',
+        });
+      }
+      if (url && !/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url;
+      sourceUrl = url;
+      parts = [{ url: url || 'pasted text', meta: {}, ld: [], headings: [], body: pasted.slice(0, 14000) }];
+    } else {
+      if (!url) return res.status(400).json({ error: 'Paste your website address first.' });
+      // Add https:// for a bare domain, but leave any scheme the user typed
+      // alone so assertPublicUrl can reject it with a message that makes sense.
+      if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url;
 
-    const totalText = parts.reduce((n, p) => n + p.body.length, 0);
-    if (totalText < 120) {
-      return res.status(422).json({
-        error: 'That page had almost no readable text — it may be built entirely in JavaScript. Fill the profile in by hand, or try a different page such as your About page.',
-      });
+      const home = await fetchPage(url);
+      sourceUrl = home.finalUrl;
+      pagesRead.push(home.finalUrl);
+      parts = [{ url: home.finalUrl, ...extractPageText(home.html) }];
+
+      // An About page is a bonus, never a reason to fail.
+      const aboutUrl = findAboutLink(home.html, home.finalUrl);
+      if (aboutUrl) {
+        try {
+          const about = await fetchPage(aboutUrl, 8000);
+          pagesRead.push(about.finalUrl);
+          parts.push({ url: about.finalUrl, ...extractPageText(about.html) });
+        } catch (_) {}
+      }
+
+      const totalText = parts.reduce((n, p) => n + p.body.length, 0);
+      if (totalText < 120) {
+        return res.status(422).json({
+          error: 'That page had almost no readable text — it may be built entirely in JavaScript. Use "Paste your text instead" below, or fill the fields in by hand.',
+          canPaste: true,
+        });
+      }
     }
 
     // Split the character budget across the pages we managed to read.
@@ -849,10 +932,13 @@ app.post('/api/brand-profile/scan', async (req, res) => {
       catch (_) { return res.status(500).json({ error: 'Could not read the AI response. Try again.' }); }
     }
 
-    const profile = normalizeBrandProfile({ ...draft, website: home.finalUrl });
+    const profile = normalizeBrandProfile({ ...draft, website: sourceUrl });
     if (!profile.brandName && !profile.description) {
       return res.status(422).json({
-        error: 'We read the page but could not tell what the brand is. Try your About page, or fill the profile in by hand.',
+        error: pasted
+          ? 'That text did not say enough about the brand. Add a sentence or two on what you sell and who buys it.'
+          : 'We read the page but could not tell what the brand is. Try your About page, or use "Paste your text instead" below.',
+        canPaste: !pasted,
       });
     }
     res.json({
@@ -861,9 +947,12 @@ app.post('/api/brand-profile/scan', async (req, res) => {
       confidence: String(draft.confidence || '').toLowerCase() || 'medium',
       notes: String(draft.notes || '').trim(),
       pagesRead,
+      source: pasted ? 'text' : 'website',
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    // A firewall block isn't the user's mistake — tell the UI to offer the
+    // paste-your-text route rather than leaving them stuck.
+    res.status(err.blocked ? 422 : 400).json({ error: err.message, canPaste: !!err.blocked });
   }
 });
 
@@ -2056,31 +2145,82 @@ app.post('/api/settings/cookies', (req, res) => {
   // actor's Playwright rejects (e.g. sameSite: "unspecified").
   const clean = sanitizeCookies(cookies);
   writeDB('instagram_cookies.json', clean);
+  cookieCheckCache = null;   // a new session deserves a fresh verdict
   res.json({ ok: true, count: clean.length });
 });
 
-// Diagnostic: verify cookies actually work against Instagram right now
-app.post('/api/settings/cookies/test', async (req, res) => {
+// Does the stored session actually work? "A cookie file exists" is not the
+// same thing — an expired session passes the structural check and then fails
+// on the first DM. This asks Instagram.
+//
+// Cached briefly so opening Settings a few times doesn't hammer Instagram
+// from the server; the cache is dropped whenever new cookies are saved.
+let cookieCheckCache = null;
+const COOKIE_CHECK_TTL = 60 * 1000;
+
+async function verifyStoredSession({ force = false } = {}) {
+  if (!force && cookieCheckCache && Date.now() - cookieCheckCache.at < COOKIE_CHECK_TTL) {
+    return { ...cookieCheckCache.result, cached: true };
+  }
+
+  const remember = (result) => {
+    cookieCheckCache = { at: Date.now(), result };
+    return { ...result, cached: false };
+  };
+
   const cookies = loadCookies();
   const check = validateCookies(cookies);
-  if (!check.ok) return res.status(400).json({ ok: false, error: check.error });
+  if (!check.ok) return remember({ ok: false, state: 'missing', error: check.error });
 
   try {
     const inbox = await fetchInstagramInbox(cookies);
     const threadCount = inbox?.inbox?.threads?.length ?? 0;
     const viewer = inbox?.viewer || inbox?.inbox?.viewer || null;
-    res.json({
+    return remember({
       ok: true,
+      state: 'live',
       threadCount,
       username: viewer?.username || null,
       message: `Instagram reachable. Found ${threadCount} threads in inbox.`,
     });
   } catch (err) {
-    res.status(400).json({
+    const msg = err.message || '';
+    // Instagram turning us away is a dead session; the network being down is
+    // not — telling the user to reconnect in that case would be wrong.
+    const rejected = /\((401|403|429)\)/.test(msg) || /login_required|checkpoint/i.test(msg);
+    if (rejected) {
+      return remember({
+        ok: false,
+        state: 'expired',
+        error: 'Instagram no longer accepts this session. Log into Instagram in your browser and connect again.',
+        detail: msg.slice(0, 300),
+      });
+    }
+    // A transient failure isn't a verdict, so don't store it — and drop any
+    // older verdict too, otherwise the next call serves a stale answer that
+    // looks newer than the check the user just asked for.
+    cookieCheckCache = null;
+    return {
       ok: false,
-      error: `Instagram rejected these cookies: ${err.message}. They are likely expired — log out and log back in on Instagram, then re-export.`,
-    });
+      state: 'unknown',
+      error: 'Could not reach Instagram to check the session just now.',
+      detail: msg.slice(0, 300),
+      cached: false,
+    };
   }
+}
+
+// Used by the Settings checklist. Cheap on repeat calls thanks to the cache.
+app.get('/api/settings/cookies/verify', async (req, res) => {
+  const result = await verifyStoredSession({ force: req.query.force === '1' });
+  res.json(result);
+});
+
+// Diagnostic: verify cookies actually work against Instagram right now
+app.post('/api/settings/cookies/test', async (req, res) => {
+  const result = await verifyStoredSession({ force: true });
+  if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+  res.json(result);
 });
 
 // Diagnostic: send a test DM to any username without touching negotiations

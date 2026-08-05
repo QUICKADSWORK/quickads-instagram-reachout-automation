@@ -104,6 +104,9 @@
           toast('✓ Instagram connected — ready for outreach', 5000);
           finishBusy(null);
           refreshServerState();
+          if (typeof QuickAdsIG.onConnected === 'function') {
+            try { QuickAdsIG.onConnected(); } catch (_) {}
+          }
         } else {
           toast(out.error || 'Could not save the Instagram session.', 7000);
           finishBusy(out.error || 'Save failed.');
@@ -119,6 +122,7 @@
     state,
     onChange: null,
     onAutoConnect: null,
+    onConnected: null,
     refreshServerState,
 
     // Forget the last failure, so a fresh attempt isn't judged by an old one.
