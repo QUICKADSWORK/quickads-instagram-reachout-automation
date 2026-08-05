@@ -7,13 +7,25 @@
   if (window.top !== window) return;          // skip iframes
   if (document.getElementById('quickads-connect-card')) return;
 
-  const ask = (message) => new Promise((resolve) => {
+  // Same MV3 wake-up retry as the app bridge: the service worker may be asleep.
+  const ask = (message, attempt = 0) => new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     try {
       chrome.runtime.sendMessage(message, (r) => {
-        if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message });
-        resolve(r || { ok: false });
+        const err = chrome.runtime.lastError;
+        if (err) {
+          const msg = err.message || '';
+          if (/context invalidated|Extension context/i.test(msg)) return done({ ok: false, error: 'EXT_RELOADED' });
+          if (attempt < 3 && /Receiving end does not exist|message port closed/i.test(msg)) {
+            return setTimeout(() => ask(message, attempt + 1).then(done), 150 * (attempt + 1));
+          }
+          return done({ ok: false, error: msg });
+        }
+        done(r || { ok: false });
       });
-    } catch (err) { resolve({ ok: false, error: err.message }); }
+    } catch (err) { done({ ok: false, error: err.message }); }
+    setTimeout(() => done({ ok: false, error: 'timeout' }), 8000);
   });
 
   function card() {
@@ -83,11 +95,30 @@
     });
   }
 
-  // Instagram is a single-page app, so the session can appear after load.
+  // Instagram is a single-page app, so the session can appear well after load.
   maybeShow();
+
+  // Poll for a while (covers the usual "log in, land on the feed" flow)…
   let tries = 0;
   const timer = setInterval(() => {
-    if (++tries > 10 || document.getElementById('quickads-connect-card')) return clearInterval(timer);
+    if (++tries > 20 || document.getElementById('quickads-connect-card')) return clearInterval(timer);
     maybeShow();
   }, 3000);
+
+  // …and, more reliably, react the moment the background sees the session
+  // cookie appear. This catches logins that finish long after page load.
+  try {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg && msg.type === 'IG_LOGGED_IN') {
+        maybeShow();
+        sendResponse({ ok: true });
+      }
+      return true;
+    });
+  } catch (_) {}
+
+  // Coming back to the tab is another good moment to check.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) maybeShow();
+  });
 })();

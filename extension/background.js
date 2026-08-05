@@ -76,6 +76,15 @@ chrome.cookies.onChanged.addListener(async (info) => {
   if (info.removed) {
     // Logged out — allow prompting again next time.
     await chrome.storage.local.remove(['connectedAt', 'promptDismissedAt']);
+  } else {
+    // Just logged in: tell any open Instagram tab to offer the connect card,
+    // rather than relying on that tab's polling still being alive.
+    try {
+      const tabs = await chrome.tabs.query({ url: '*://*.instagram.com/*' });
+      for (const t of tabs) {
+        chrome.tabs.sendMessage(t.id, { type: 'IG_LOGGED_IN' }, () => void chrome.runtime.lastError);
+      }
+    } catch (_) {}
   }
   refreshBadge();
 });

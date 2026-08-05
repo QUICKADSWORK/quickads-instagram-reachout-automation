@@ -735,18 +735,19 @@
     if (el) { el.className = cls; el.textContent = msg; }
     if (top) { top.className = cls; top.textContent = msg; }
 
-    // Keep the 3-step checklist in sync with the real connection state.
-    if (typeof renderConnectChecklist === 'function') {
-      renderConnectChecklist(!!(data.hasCookies && data.valid));
+    // Keep the shared connect state (and therefore the checklist) in sync.
+    if (window.QuickAdsIG) {
+      window.QuickAdsIG.state.connected = !!(data.hasCookies && data.valid);
     }
+    if (typeof renderConnectChecklist === 'function') renderConnectChecklist();
   }
 
   $('#btnSettings').addEventListener('click', () => {
     $('#settingsOverlay').style.display = 'flex';
     const origin = $('#appOrigin');
     if (origin) origin.textContent = window.location.origin;
-    renderConnectChecklist(false);   // paint immediately, then refine
-    toExtension({ type: 'QUICKADS_REQUEST_STATUS' });
+    renderConnectChecklist();        // paint immediately, then refine
+    if (window.QuickAdsIG) window.QuickAdsIG.requestStatus();
     checkCookies();
     checkHostedAvailable();
   });
@@ -782,12 +783,9 @@
     });
   }
 
-  // ── Browser helper (extension) auto-detect + connect ──
-  // The helper injects a bridge into this page. It tells us it's installed and
-  // whether Instagram is logged in, then hands over the cookies on request —
-  // which we save same-origin, so there's no code or URL to type.
-
-  const ext = { installed: false, loggedIn: false, version: null, connected: false };
+  // ── Browser helper (extension) status + connect ───────
+  // All the messaging lives in ig-connect.js (shared by every page); here we
+  // only render the 3-step checklist from the state it reports.
 
   function setCheck(id, state, title, sub, showAction) {
     const el = $('#' + id);
@@ -800,24 +798,21 @@
     if (action) action.style.display = showAction ? 'block' : 'none';
   }
 
-  function toExtension(payload) {
-    window.postMessage({ source: 'quickads-page', ...payload }, window.location.origin);
-  }
+  function renderConnectChecklist() {
+    const st = (window.QuickAdsIG && window.QuickAdsIG.state) || {};
+    const connected = !!st.connected;
 
-  function renderConnectChecklist(cookiesOk) {
-    // Step 1 — helper installed?
-    if (ext.installed) {
+    if (st.installed) {
       setCheck('chkExt', 'ok', 'Step 1 — Helper installed ✓',
-        'QuickAds helper v' + (ext.version || '?') + ' is active in this browser.', false);
+        'QuickAds helper v' + (st.version || '?') + ' is active in this browser.', false);
     } else {
       setCheck('chkExt', 'bad', 'Step 1 — Helper not installed',
         'Add it to Chrome or Edge, then refresh this page.', true);
     }
 
-    // Step 2 — Instagram logged in?
-    if (!ext.installed) {
+    if (!st.installed) {
       setCheck('chkIg', 'idle', 'Step 2 — Instagram login', 'Waiting for the helper.', false);
-    } else if (ext.loggedIn) {
+    } else if (st.loggedIn) {
       setCheck('chkIg', 'ok', 'Step 2 — Logged into Instagram ✓',
         'A live Instagram session was found in this browser.', false);
     } else {
@@ -825,16 +820,24 @@
         'Open Instagram and log in with the account you want to use, then come back.', true);
     }
 
-    // Step 3 — connected?
-    if (cookiesOk) {
-      setCheck('chkConn', 'ok', 'Step 3 — Connected ✓', 'QuickAds can send DMs from your account.', false);
+    const btn = $('#btnExtConnect');
+    if (btn) {
+      btn.disabled = !!st.busy;
+      btn.textContent = st.busy ? 'Connecting…' : (connected ? 'Reconnect Instagram' : 'Connect Instagram');
+    }
+
+    if (connected) {
+      setCheck('chkConn', 'ok', 'Step 3 — Connected ✓',
+        'QuickAds can send DMs from your account.',
+        // Keep the button available so an expired session can be refreshed.
+        !!(st.installed && st.loggedIn));
       $('#readyBanner').style.display = 'block';
-      $('#readyBannerSub').textContent = ext.loggedIn
+      $('#readyBannerSub').textContent = st.loggedIn
         ? 'Instagram session saved. You can start your outreach.'
-        : 'Instagram session saved.';
+        : 'Instagram session saved, but this browser is no longer logged in — reconnect if DMs start failing.';
     } else {
       $('#readyBanner').style.display = 'none';
-      if (ext.installed && ext.loggedIn) {
+      if (st.installed && st.loggedIn) {
         setCheck('chkConn', 'warn', 'Step 3 — Ready to connect',
           'Press Connect and your Instagram session is saved automatically.', true);
       } else {
@@ -843,88 +846,67 @@
     }
   }
 
-  // Messages coming back from the helper.
-  window.addEventListener('message', async (event) => {
-    if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data;
-    if (!data || data.source !== 'quickads-extension') return;
-
-    if (data.type === 'QUICKADS_EXT_STATUS') {
-      ext.installed = true;
-      ext.version = data.version;
-      ext.loggedIn = !!data.loggedIn;
-      checkCookies();
-    }
-
-    if (data.type === 'QUICKADS_EXT_AUTOCONNECT') {
-      // Arrived here from the "Connect" button on Instagram — show Settings so
-      // the user actually sees the result instead of it happening invisibly.
-      showToast('Connecting your Instagram…');
+  if (window.QuickAdsIG) {
+    window.QuickAdsIG.onChange = () => { renderConnectChecklist(); };
+    // Arrived from the Instagram banner — show Settings so the result is visible.
+    window.QuickAdsIG.onAutoConnect = () => {
       const overlay = $('#settingsOverlay');
       if (overlay) {
         overlay.style.display = 'flex';
         const origin = $('#appOrigin');
         if (origin) origin.textContent = window.location.origin;
-        renderConnectChecklist(false);
         checkHostedAvailable();
       }
-    }
+      renderConnectChecklist();
+    };
+  }
 
-    if (data.type === 'QUICKADS_EXT_ERROR') {
-      showToast(data.error || 'The helper could not connect.', 7000);
-      if (data.needsLogin) { ext.loggedIn = false; renderConnectChecklist(false); }
-      const btn = $('#btnExtConnect');
-      if (btn) { btn.disabled = false; btn.textContent = 'Connect Instagram'; }
-    }
-
-    // The helper handed us the cookies — save them same-origin.
-    if (data.type === 'QUICKADS_EXT_COOKIES' && Array.isArray(data.cookies)) {
-      try {
-        const res = await fetch('/api/settings/cookies', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cookies: data.cookies }),
-        });
-        const out = await res.json().catch(() => ({}));
-        if (res.ok) {
-          ext.connected = true;
-          toExtension({ type: 'QUICKADS_CONNECTED' });
-          showToast('✓ Instagram connected — ready for outreach', 5000);
-          checkCookies();
-        } else {
-          showToast(out.error || 'Could not save the Instagram session.', 7000);
-        }
-      } catch (err) {
-        showToast('Could not save the session: ' + err.message, 7000);
-      } finally {
-        const btn = $('#btnExtConnect');
-        if (btn) { btn.disabled = false; btn.textContent = 'Connect Instagram'; }
-      }
-    }
-  });
+  // Re-check reports its result on a delay, so a connect started in the
+  // meantime must be able to cancel it — otherwise "Instagram session found."
+  // lands on top of a genuine connect error and hides it.
+  let recheckTimer = null;
+  function cancelRecheckToast() {
+    if (recheckTimer) { clearTimeout(recheckTimer); recheckTimer = null; }
+  }
 
   const btnExtConnect = $('#btnExtConnect');
   if (btnExtConnect) {
     btnExtConnect.addEventListener('click', () => {
-      btnExtConnect.disabled = true;
-      btnExtConnect.textContent = 'Connecting…';
-      toExtension({ type: 'QUICKADS_REQUEST_CONNECT' });
-      // Re-enable if the helper never answers.
-      setTimeout(() => {
-        if (btnExtConnect.disabled) {
-          btnExtConnect.disabled = false;
-          btnExtConnect.textContent = 'Connect Instagram';
-        }
-      }, 15000);
+      if (!window.QuickAdsIG) return;
+      if (!window.QuickAdsIG.state.installed) {
+        showToast('The helper is not installed in this browser yet.', 5000);
+        return;
+      }
+      cancelRecheckToast();
+      window.QuickAdsIG.connect();
     });
   }
 
   const btnRecheck = $('#btnRecheck');
   if (btnRecheck) {
     btnRecheck.addEventListener('click', () => {
-      toExtension({ type: 'QUICKADS_REQUEST_STATUS' });
+      const before = window.QuickAdsIG ? window.QuickAdsIG.state.installed : false;
+      if (window.QuickAdsIG) {
+        window.QuickAdsIG.clearError();   // only mute on failures from *this* attempt
+        window.QuickAdsIG.requestStatus();
+      }
       checkCookies();
-      showToast('Re-checking…', 1500);
+      cancelRecheckToast();
+      recheckTimer = setTimeout(() => {
+        recheckTimer = null;
+        const st = (window.QuickAdsIG && window.QuickAdsIG.state) || {};
+        // A connect is running or just failed — don't talk over it.
+        if (!st.busy && !st.lastError) {
+          if (!st.installed) {
+            showToast(before
+              ? 'The helper stopped responding — refresh the page.'
+              : 'Helper still not detected. Install it, then refresh this page.', 6000);
+          } else {
+            showToast(st.loggedIn ? 'Instagram session found.' : 'Helper found, but no Instagram login yet.', 4000);
+          }
+        }
+        renderConnectChecklist();
+      }, 1500);
     });
   }
 
