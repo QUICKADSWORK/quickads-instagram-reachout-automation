@@ -339,6 +339,26 @@ Looking forward to hearing from you!</textarea>
         <svg class="chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
       <div class="dm-body" id="brandBody">
+        <!-- Fill the form from the brand's own website, then let them edit it -->
+        <div class="brand-scan">
+          <label for="bfScanUrl">Fill this in automatically from your website</label>
+          <div class="brand-scan-row">
+            <input type="url" id="bfScanUrl" placeholder="yourbrand.com" autocomplete="url" />
+            <button type="button" id="btnScanSite" class="btn btn-primary">Scan Website</button>
+          </div>
+          <p class="form-hint" id="bfScanHint" style="margin:6px 0 0;">
+            We read your homepage (and your About page if we can find one) and draft the fields below. Nothing is saved until you press Save.
+          </p>
+        </div>
+
+        <div id="bfScanReview" class="brand-scan-review" style="display:none;">
+          <div class="brand-scan-review-head">
+            <strong id="bfScanTitle">Draft ready — review before saving</strong>
+            <button type="button" id="btnScanUndo" class="btn-link">Undo</button>
+          </div>
+          <p id="bfScanDetail" class="form-hint" style="margin:4px 0 0;"></p>
+        </div>
+
         <div class="form-row">
           <div class="form-group">
             <label for="bfBrandName">Brand Name</label>

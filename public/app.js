@@ -410,12 +410,93 @@
         for (const [k, sel] of Object.entries(BRAND_FIELDS)) {
           if (p[k] && $(sel)) $(sel).value = p[k];
         }
+        if (p.website && $('#bfScanUrl')) $('#bfScanUrl').value = p.website;
       }
     } catch (_) {}
   }
 
   if (brandPanelToggle) {
     brandPanelToggle.addEventListener('click', () => brandBody.parentElement.classList.toggle('open'));
+  }
+
+  // ── Draft the profile from the brand's own website ─────
+  // The scan only fills the form in. The user still reviews every field and
+  // presses Save themselves, and Undo puts back whatever was there before.
+  const btnScanSite = $('#btnScanSite');
+  const bfScanUrl = $('#bfScanUrl');
+  const bfScanReview = $('#bfScanReview');
+  const bfScanTitle = $('#bfScanTitle');
+  const bfScanDetail = $('#bfScanDetail');
+  const btnScanUndo = $('#btnScanUndo');
+  let preScanSnapshot = null;
+
+  function writeBrandForm(profile, { markFilled = false } = {}) {
+    for (const [k, sel] of Object.entries(BRAND_FIELDS)) {
+      const el = $(sel);
+      if (!el) continue;
+      el.value = profile[k] || '';
+      if (markFilled && profile[k]) {
+        el.classList.remove('bf-filled');
+        void el.offsetWidth;              // restart the highlight animation
+        el.classList.add('bf-filled');
+      }
+    }
+  }
+
+  if (btnScanSite) {
+    btnScanSite.addEventListener('click', async () => {
+      const url = (bfScanUrl.value || '').trim();
+      if (!url) {
+        brandSaveStatus.textContent = 'Paste your website address first.';
+        bfScanUrl.focus();
+        return;
+      }
+      preScanSnapshot = readBrandForm();
+      btnScanSite.disabled = true;
+      btnScanSite.textContent = 'Reading your site…';
+      brandSaveStatus.textContent = '';
+      bfScanReview.style.display = 'none';
+      try {
+        const res = await fetch('/api/brand-profile/scan', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          brandSaveStatus.textContent = data.error || 'Could not read that site.';
+          return;
+        }
+
+        writeBrandForm(data.profile, { markFilled: true });
+        if (data.profile.website) bfScanUrl.value = data.profile.website;
+
+        const low = data.confidence === 'low';
+        bfScanReview.className = 'brand-scan-review' + (low ? ' low' : '');
+        bfScanTitle.textContent = low
+          ? 'Draft ready — the site did not say much, please check every field'
+          : 'Draft ready — review the fields below, then Save';
+        const pages = (data.pagesRead || []).length;
+        bfScanDetail.textContent = [
+          `Read ${pages} page${pages === 1 ? '' : 's'}.`,
+          data.notes,
+          'Nothing is saved until you press Save Brand Profile.',
+        ].filter(Boolean).join(' ');
+        bfScanReview.style.display = 'block';
+      } catch (err) {
+        brandSaveStatus.textContent = 'Could not read that site: ' + err.message;
+      } finally {
+        btnScanSite.disabled = false;
+        btnScanSite.textContent = 'Scan Website';
+      }
+    });
+  }
+
+  if (btnScanUndo) {
+    btnScanUndo.addEventListener('click', () => {
+      if (preScanSnapshot) writeBrandForm(preScanSnapshot);
+      bfScanReview.style.display = 'none';
+      brandSaveStatus.textContent = 'Reverted to what you had before the scan.';
+    });
   }
 
   if (btnSaveBrand) {
@@ -425,6 +506,7 @@
         brandSaveStatus.textContent = 'Add at least a brand name or description.';
         return;
       }
+      profile.website = ($('#bfScanUrl')?.value || '').trim();
       btnSaveBrand.disabled = true;
       brandSaveStatus.textContent = 'Saving…';
       try {
@@ -434,6 +516,11 @@
         });
         const data = await res.json();
         brandSaveStatus.textContent = res.ok ? '✓ Saved' : (data.error || 'Save failed');
+        // The draft has been accepted — no more "review this" prompt.
+        if (res.ok) {
+          const review = $('#bfScanReview');
+          if (review) review.style.display = 'none';
+        }
       } catch (err) {
         brandSaveStatus.textContent = 'Save failed: ' + err.message;
       } finally {

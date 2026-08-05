@@ -247,6 +247,7 @@ body {
 
 input[type="text"],
 input[type="number"],
+input[type="url"],
 select,
 textarea {
   background: var(--bg-input);
@@ -914,4 +915,86 @@ textarea#dmTemplate {
   .hero {
     padding: 32px 0 28px;
   }
+}
+
+/* ── Brand profile: fill from website ─────────────────── */
+
+.brand-scan {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin-bottom: 18px;
+}
+
+.brand-scan > label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.brand-scan-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.brand-scan-row input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.brand-scan-row .btn {
+  flex: 0 0 auto;
+}
+
+.brand-scan-review {
+  border: 1px solid var(--accent);
+  background: var(--accent-glow);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 18px;
+}
+
+.brand-scan-review.low {
+  border-color: var(--orange);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.brand-scan-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brand-scan-review-head strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.btn-link:hover { color: var(--text); }
+
+/* Briefly mark the fields the scan filled in, so the review is obvious. */
+@keyframes bfFilled {
+  from { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+  to   { border-color: var(--border); box-shadow: none; }
+}
+
+.bf-filled {
+  animation: bfFilled 2.4s ease-out;
 }
