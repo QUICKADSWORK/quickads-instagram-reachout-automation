@@ -600,6 +600,273 @@ app.post('/api/brand-profile', (req, res) => {
   res.json({ ok: true, profile });
 });
 
+// ── Auto-fill the brand profile from the user's own website ──
+//
+// The user pastes their homepage; we read it (plus an About page if we can
+// find one), hand the text to Claude, and give back a *draft* profile for
+// them to review. Nothing is saved until they press Save Brand Profile.
+
+const PRIVATE_IP = [
+  /^127\./, /^10\./, /^192\.168\./, /^169\.254\./, /^0\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+];
+
+// Whoever can reach this app can make it fetch a URL, so keep it off the
+// local network and off anything that isn't a plain web page.
+async function assertPublicUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch (_) { throw new Error('That does not look like a valid URL.'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('Only http:// and https:// links are supported.');
+  }
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+    throw new Error('That address is not reachable from the internet.');
+  }
+  const { lookup } = require('dns').promises;
+  let addrs;
+  try {
+    addrs = await lookup(host, { all: true });
+  } catch (_) {
+    throw new Error(`Could not find ${host}. Check the address and try again.`);
+  }
+  for (const a of addrs) {
+    if (a.family === 6) {
+      const v6 = a.address.toLowerCase();
+      if (v6 === '::1' || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe80')) {
+        throw new Error('That address is not reachable from the internet.');
+      }
+      continue;
+    }
+    if (PRIVATE_IP.some((re) => re.test(a.address))) {
+      throw new Error('That address is not reachable from the internet.');
+    }
+  }
+  return u;
+}
+
+// fetch() follows redirects on its own, which would skip the check above on
+// every hop after the first — so follow them by hand and re-check each one.
+async function fetchPage(url, timeoutMs = 12000) {
+  let current = url;
+  for (let hop = 0; hop < 5; hop++) {
+    const u = await assertPublicUrl(current);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(u.href, {
+        redirect: 'manual',
+        signal: ctrl.signal,
+        headers: {
+          // Plenty of sites serve a stub to unknown clients.
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+      current = new URL(res.headers.get('location'), u.href).href;
+      continue;
+    }
+    if (!res.ok) throw new Error(`The site returned ${res.status} ${res.statusText || ''}`.trim());
+
+    const type = res.headers.get('content-type') || '';
+    if (type && !/html|xml|text\/plain/i.test(type)) {
+      throw new Error('That link is not a web page.');
+    }
+    return { html: await res.text(), finalUrl: u.href };
+  }
+  throw new Error('Too many redirects.');
+}
+
+// Pull out the parts of a page that actually describe a brand, and drop the
+// markup noise so we spend Claude's context on real copy.
+function extractPageText(html) {
+  const meta = {};
+  const grab = (re) => { const m = html.match(re); return m ? m[1].trim() : ''; };
+
+  meta.title = grab(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const metaTag = (name) => {
+    const re = new RegExp(
+      `<meta[^>]+(?:name|property)=["']${name}["'][^>]*content=["']([^"']*)["']`, 'i');
+    const alt = new RegExp(
+      `<meta[^>]+content=["']([^"']*)["'][^>]*(?:name|property)=["']${name}["']`, 'i');
+    return grab(re) || grab(alt);
+  };
+  meta.description = metaTag('description') || metaTag('og:description');
+  meta.ogTitle = metaTag('og:title');
+  meta.siteName = metaTag('og:site_name');
+  meta.keywords = metaTag('keywords');
+
+  // Structured data is usually the cleanest description a site has.
+  const ld = [];
+  const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = ldRe.exec(html)) && ld.length < 5) {
+    try { ld.push(JSON.parse(m[1].trim())); } catch (_) {}
+  }
+
+  const headings = [];
+  const hRe = /<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi;
+  while ((m = hRe.exec(html)) && headings.length < 25) {
+    const t = m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (t && t.length < 160) headings.push(t);
+  }
+
+  const body = html
+    .replace(/<(script|style|noscript|svg|iframe)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#39;|&rsquo;|&lsquo;/g, "'")
+    .replace(/&quot;|&ldquo;|&rdquo;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { meta, ld, headings, body };
+}
+
+// Find an About/Story page — that's where the positioning copy usually lives.
+function findAboutLink(html, baseUrl) {
+  const re = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const href = m[1];
+    const label = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!/about|our story|who we are|brand/i.test(label + ' ' + href)) continue;
+    if (/^(mailto:|tel:|javascript:|#)/i.test(href)) continue;
+    try {
+      const abs = new URL(href, baseUrl);
+      if (abs.hostname !== new URL(baseUrl).hostname) continue;
+      if (abs.href.replace(/\/$/, '') === baseUrl.replace(/\/$/, '')) continue;
+      return abs.href;
+    } catch (_) {}
+  }
+  return null;
+}
+
+const BRAND_SCAN_PROMPT = `You read a company's own website and fill in a brand profile that will be used to judge whether an Instagram influencer is a good fit for a paid collaboration.
+
+Return ONLY a JSON object, no prose and no markdown fences:
+{"brandName":"","productType":"","description":"","targetAudience":"","idealCreator":"","values":"","confidence":"high|medium|low","notes":""}
+
+Field rules:
+- brandName: the company name as they write it.
+- productType: what they actually sell, in a few words (e.g. "plant-based protein powder", "handmade leather bags").
+- description: 1-2 plain sentences on what the brand is and does. Their words, not marketing fluff.
+- targetAudience: who they sell to — demographics, interests, life stage. Infer from the copy and the products.
+- idealCreator: the kind of Instagram creator that would suit this brand (niche, size, tone). This is your recommendation, not something the site states.
+- values: brand values, positioning, and anything a partnership must avoid (e.g. "sustainable, no alcohol").
+- confidence: how sure you are overall, given how much the page actually said.
+- notes: one short sentence on anything you had to guess, or "" if nothing.
+
+If the page genuinely doesn't say, leave that field as an empty string rather than inventing something. Never guess the brand name.`;
+
+app.post('/api/brand-profile/scan', async (req, res) => {
+  try {
+    if (!CLAUDE_API_KEY) {
+      return res.status(400).json({ error: 'CLAUDE_API_KEY is not set on the server.' });
+    }
+    let url = String((req.body || {}).url || '').trim();
+    if (!url) return res.status(400).json({ error: 'Paste your website address first.' });
+    // Add https:// for a bare domain, but leave any scheme the user typed
+    // alone so assertPublicUrl can reject it with a message that makes sense.
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url;
+
+    const pagesRead = [];
+    const home = await fetchPage(url);
+    pagesRead.push(home.finalUrl);
+    const parts = [{ url: home.finalUrl, ...extractPageText(home.html) }];
+
+    // An About page is a bonus, never a reason to fail.
+    const aboutUrl = findAboutLink(home.html, home.finalUrl);
+    if (aboutUrl) {
+      try {
+        const about = await fetchPage(aboutUrl, 8000);
+        pagesRead.push(about.finalUrl);
+        parts.push({ url: about.finalUrl, ...extractPageText(about.html) });
+      } catch (_) {}
+    }
+
+    const totalText = parts.reduce((n, p) => n + p.body.length, 0);
+    if (totalText < 120) {
+      return res.status(422).json({
+        error: 'That page had almost no readable text — it may be built entirely in JavaScript. Fill the profile in by hand, or try a different page such as your About page.',
+      });
+    }
+
+    // Split the character budget across the pages we managed to read.
+    const budget = Math.floor(14000 / parts.length);
+    const userContent = parts.map((p) => [
+      `--- PAGE: ${p.url} ---`,
+      p.meta.title ? `Title: ${p.meta.title}` : '',
+      p.meta.siteName ? `Site name: ${p.meta.siteName}` : '',
+      p.meta.description ? `Meta description: ${p.meta.description}` : '',
+      p.meta.keywords ? `Keywords: ${p.meta.keywords}` : '',
+      p.ld.length ? `Structured data: ${JSON.stringify(p.ld).slice(0, 1500)}` : '',
+      p.headings.length ? `Headings: ${p.headings.join(' | ')}` : '',
+      `Page text: ${p.body.slice(0, budget)}`,
+    ].filter(Boolean).join('\n')).join('\n\n');
+
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 1200,
+        thinking: { type: 'disabled' },
+        system: BRAND_SCAN_PROMPT,
+        messages: [{ role: 'user', content: userContent }],
+      }),
+    });
+
+    if (!claudeRes.ok) {
+      const errBody = await claudeRes.text();
+      return res.status(500).json({ error: `Claude API error: ${errBody.slice(0, 500)}` });
+    }
+
+    const claudeData = await claudeRes.json();
+    let text = (claudeData.content?.[0]?.text || '').trim()
+      .replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+
+    let draft;
+    try {
+      draft = JSON.parse(text);
+    } catch (_) {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return res.status(500).json({ error: 'Could not read the AI response. Try again.' });
+      try { draft = JSON.parse(m[0]); }
+      catch (_) { return res.status(500).json({ error: 'Could not read the AI response. Try again.' }); }
+    }
+
+    const profile = normalizeBrandProfile({ ...draft, website: home.finalUrl });
+    if (!profile.brandName && !profile.description) {
+      return res.status(422).json({
+        error: 'We read the page but could not tell what the brand is. Try your About page, or fill the profile in by hand.',
+      });
+    }
+    res.json({
+      ok: true,
+      profile,                       // a draft — the user saves it themselves
+      confidence: String(draft.confidence || '').toLowerCase() || 'medium',
+      notes: String(draft.notes || '').trim(),
+      pagesRead,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 function buildBrandFitPrompt(brand) {
   return `You are an expert influencer-marketing strategist. Score how well each Instagram influencer fits the brand below for a PAID collaboration.
 
