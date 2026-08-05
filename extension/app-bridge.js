@@ -138,6 +138,10 @@
     if (data.type === 'QUICKADS_CONNECTED') {
       ask({ type: 'MARK_CONNECTED', account: data.account || null });
     }
+    // The app deleted its stored session, so we're not connected any more.
+    if (data.type === 'QUICKADS_DISCONNECTED') {
+      ask({ type: 'MARK_DISCONNECTED' });
+    }
   });
 
   // Announce on load, then auto-connect if the user pressed Connect over on

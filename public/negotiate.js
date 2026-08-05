@@ -836,6 +836,12 @@
       btn.textContent = st.busy ? 'Connecting…' : (connected ? 'Reconnect Instagram' : 'Connect Instagram');
     }
 
+    // Disconnect is only meaningful while something is stored.
+    const dc = $('#btnDisconnect');
+    if (dc) dc.style.display = connected ? 'inline-flex' : 'none';
+    const dcHint = $('#disconnectHint');
+    if (dcHint) dcHint.style.display = connected ? 'block' : 'none';
+
     if (!connected) {
       $('#readyBanner').style.display = 'none';
       if (st.installed && st.loggedIn) {
@@ -851,9 +857,11 @@
     // helper switched off — but "a file exists" is not proof it still works.
     // v is the answer from Instagram itself.
     const v = verifyResult;
+    // Be straight about this: the session lives on the server, so removing
+    // the helper doesn't revoke it. Point at the thing that does.
     const helperNote = st.installed
       ? ''
-      : ' The helper is only needed to connect, so DMs keep working without it.';
+      : ' Removing the helper does not revoke this — press Disconnect Instagram to delete the stored session.';
 
     if (!v) {
       setCheck('chkConn', 'warn', 'Step 3 — Checking your Instagram session…',
@@ -946,6 +954,34 @@
       }
       cancelRecheckToast();
       window.QuickAdsIG.connect();
+    });
+  }
+
+  const btnDisconnect = $('#btnDisconnect');
+  if (btnDisconnect) {
+    btnDisconnect.addEventListener('click', async () => {
+      const ok = window.confirm(
+        'Delete the stored Instagram session from this server?\n\n' +
+        'Outreach and auto-negotiation will stop until you connect again. ' +
+        'This does not log you out of Instagram itself.'
+      );
+      if (!ok) return;
+      btnDisconnect.disabled = true;
+      btnDisconnect.textContent = 'Disconnecting…';
+      try {
+        const res = await fetch('/api/settings/cookies', { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Could not disconnect.', 7000); return; }
+        verifyResult = null;
+        if (window.QuickAdsIG) window.QuickAdsIG.forget();   // clear the helper's "connected" flag too
+        showToast('Instagram disconnected. The stored session was deleted.', 6000);
+        checkCookies();
+      } catch (err) {
+        showToast('Could not disconnect: ' + err.message, 7000);
+      } finally {
+        btnDisconnect.disabled = false;
+        btnDisconnect.textContent = 'Disconnect Instagram';
+      }
     });
   }
 

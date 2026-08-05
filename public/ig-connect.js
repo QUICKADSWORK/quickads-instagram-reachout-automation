@@ -128,6 +128,14 @@
     // Forget the last failure, so a fresh attempt isn't judged by an old one.
     clearError() { state.lastError = null; },
 
+    // The stored session was deleted — drop our own "connected" state and
+    // tell the helper, so its badge and the Instagram prompt reset too.
+    forget() {
+      state.connected = false;
+      toExtension({ type: 'QUICKADS_DISCONNECTED' });
+      notify();
+    },
+
     requestStatus() {
       toExtension({ type: 'QUICKADS_REQUEST_STATUS' });
       refreshServerState();
