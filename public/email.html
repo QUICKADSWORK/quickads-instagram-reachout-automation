@@ -79,6 +79,7 @@
       <div class="stat-card"><span class="stat-value" id="statContacts">0</span><span class="stat-label">Contacts</span></div>
       <div class="stat-card"><span class="stat-value" id="statSent">0</span><span class="stat-label">Emails sent</span></div>
       <div class="stat-card"><span class="stat-value stat-rejected" id="statFailed">0</span><span class="stat-label">Failed</span></div>
+      <div class="stat-card"><span class="stat-value stat-negotiating" id="statDeals">0</span><span class="stat-label">Active deals</span></div>
       <div class="stat-card"><span class="stat-value" id="statCampaigns">0</span><span class="stat-label">Campaigns</span></div>
     </div>
 
@@ -89,6 +90,7 @@
       <div class="tab" data-pane="paneTemplate"><span class="step-num">3</span>Message</div>
       <div class="tab" data-pane="paneSend"><span class="step-num">4</span>Send</div>
       <div class="tab" data-pane="paneResults">Results</div>
+      <div class="tab" data-pane="paneDeals">🤝 Deals <span class="tab-count" id="tabDealCount">0</span></div>
     </div>
 
     <!-- ═══ 1. SENDER ═════════════════════════════════ -->
@@ -134,13 +136,21 @@
         </div>
 
         <details id="advancedDetails" style="margin-bottom:14px;">
-          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);">Advanced settings (host, port, username, reply-to)</summary>
+          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);">Advanced settings (host, port, username, reply-to, IMAP)</summary>
           <div class="form-row" style="margin-top:12px;">
             <div class="form-group" style="flex:1.4;"><label for="sHost">SMTP host</label><input type="text" id="sHost" /></div>
             <div class="form-group" style="flex:0.6;"><label for="sPort">Port</label><input type="number" id="sPort" /></div>
             <div class="form-group" style="flex:1;"><label for="sUser">Username</label><input type="text" id="sUser" placeholder="defaults to your email" /></div>
             <div class="form-group" style="flex:1;"><label for="sReplyTo">Reply-to</label><input type="email" id="sReplyTo" placeholder="optional" /></div>
           </div>
+          <div class="form-row" style="margin-top:4px;">
+            <div class="form-group" style="flex:1.4;">
+              <label for="sImapHost">IMAP host <span class="muted" style="font-weight:400;">— for auto-negotiate autopilot</span></label>
+              <input type="text" id="sImapHost" placeholder="imap.gmail.com" />
+            </div>
+            <div class="form-group" style="flex:0.6;"><label for="sImapPort">IMAP port</label><input type="number" id="sImapPort" placeholder="993" /></div>
+          </div>
+          <p class="muted" style="margin:2px 0 0;">Leave IMAP blank for send-only. Autopilot reads replies from this inbox so the AI can negotiate on its own — the same address and app password usually work. Assisted negotiation works without it.</p>
         </details>
 
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
@@ -286,6 +296,36 @@
           Sending too fast can get your account flagged — 10 seconds between emails is a safe pace.
         </div>
 
+        <!-- Auto-negotiate -->
+        <div style="border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;background:var(--bg-card);">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;">
+            <input type="checkbox" id="cNegotiate" style="width:16px;height:16px;" />
+            🤝 Let AI negotiate replies automatically
+          </label>
+          <p class="muted" style="margin:6px 0 0;">
+            When a recipient replies, the AI picks up the conversation and negotiates the deal for you — either
+            <b>assisted</b> (you approve each reply) or full <b>autopilot</b> (reads your inbox over IMAP and replies on its own).
+            A deal thread opens for each person, on the <b>Deals</b> tab.
+          </p>
+          <div id="negotiateFields" style="display:none;margin-top:14px;">
+            <div class="form-row">
+              <div class="form-group" style="flex:1;"><label for="nBrand">Brand name <span class="required">*</span></label><input type="text" id="nBrand" placeholder="QuickAds" /></div>
+              <div class="form-group" style="flex:1;"><label for="nProduct">Product</label><input type="text" id="nProduct" placeholder="optional" /></div>
+              <div class="form-group" style="flex:1;"><label for="nCollab">Collaboration type</label><input type="text" id="nCollab" placeholder="Paid Reel" /></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex:0.6;"><label for="nCurrency">Currency</label><input type="text" id="nCurrency" placeholder="USD" value="USD" /></div>
+              <div class="form-group" style="flex:1;"><label for="nBudgetMin">Budget min</label><input type="number" id="nBudgetMin" placeholder="200" /></div>
+              <div class="form-group" style="flex:1;"><label for="nBudgetMax">Budget max <span class="required">*</span></label><input type="number" id="nBudgetMax" placeholder="600" /></div>
+            </div>
+            <div class="form-group">
+              <label for="nBrief">What should the AI pitch?</label>
+              <textarea id="nBrief" rows="2" placeholder="One 30–60s reel featuring the product, posted within 2 weeks. Usage rights for 30 days."></textarea>
+            </div>
+            <p class="muted" style="margin:0;">The AI opens near your minimum, never goes above your maximum, and never reveals the ceiling. It won't promise performance results.</p>
+          </div>
+        </div>
+
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <button id="btnStartCampaign" class="btn btn-primary btn-lg">Start sending</button>
           <span id="sendMsg" class="muted"></span>
@@ -353,6 +393,86 @@
             </thead>
             <tbody id="sendsBody"></tbody>
           </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ═══ DEALS (auto-negotiate) ════════════════════ -->
+    <div id="paneDeals" class="pane">
+      <!-- Autopilot bar -->
+      <div class="autopilot-bar" id="dealAutopilotBar">
+        <div class="autopilot-left">
+          <div class="autopilot-indicator">
+            <span class="autopilot-dot"></span>
+            <span id="dealAutopilotLabel">Autopilot Off</span>
+          </div>
+          <span id="dealAutopilotStatus" class="autopilot-status">Reads your inbox over IMAP and negotiates replies automatically</span>
+        </div>
+        <div class="autopilot-right">
+          <button id="btnDealAutopilotOnce" class="btn btn-outline btn-sm" title="Check for replies once">↻ Check now</button>
+          <button id="btnDealAutopilotToggle" class="btn btn-primary btn-sm">▶ Start Autopilot</button>
+        </div>
+      </div>
+      <div id="dealAutopilotLog" class="autopilot-log" style="display:none;max-height:220px;"></div>
+
+      <!-- List view -->
+      <section class="card" id="dealsListPanel">
+        <div class="results-header">
+          <div class="results-title">
+            <h2>Deals</h2>
+            <p class="card-subtitle">Every negotiation opened from an auto-negotiate campaign.</p>
+          </div>
+          <div class="results-actions">
+            <button id="btnRefreshDeals" class="btn btn-outline btn-sm" type="button">Refresh</button>
+          </div>
+        </div>
+        <div class="hint-box">
+          <b>Two ways to run these:</b> <b>Assisted</b> — open a deal, paste the reply, the AI drafts a response and you send it.
+          <b>Autopilot</b> — turn it on above and the AI reads your inbox and replies on its own (needs an IMAP host on the mailbox).
+        </div>
+        <div id="dealsEmpty" class="empty-state" style="padding:40px 20px;">
+          <p>No deals yet. On the <b>Send</b> tab, tick “Let AI negotiate replies automatically” before starting a campaign — a deal opens here for each person you email.</p>
+        </div>
+        <div id="dealsList"></div>
+      </section>
+
+      <!-- Thread view -->
+      <section class="card" id="dealThreadPanel" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+            <button id="btnBackToDeals" class="btn btn-outline btn-sm" type="button">← Back</button>
+            <div style="min-width:0;">
+              <div class="row-item-title" id="dealName">—</div>
+              <div class="row-item-sub" id="dealMeta">—</div>
+            </div>
+          </div>
+          <select id="dealStatus" class="status-select">
+            <option value="contacted">Contacted</option>
+            <option value="replied">Replied</option>
+            <option value="negotiating">Negotiating</option>
+            <option value="closed">Closed</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </div>
+
+        <div class="chat-messages" id="dealMessages" style="max-height:420px;overflow-y:auto;padding:4px;"></div>
+
+        <div style="margin-top:16px;">
+          <label class="muted" style="display:block;margin-bottom:6px;">Creator replied? Paste it here (assisted mode)</label>
+          <div style="display:flex;gap:8px;align-items:flex-start;">
+            <textarea id="dealCreatorReply" rows="2" placeholder="Paste the creator's reply…" style="flex:1;"></textarea>
+            <button id="btnDealSubmitReply" class="btn btn-outline" type="button">Add reply</button>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <label class="muted" style="display:block;margin-bottom:6px;">Your next email</label>
+          <textarea id="dealDraft" rows="6" placeholder="Write a reply, or click “AI draft” to generate one…"></textarea>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+            <button id="btnDealGenerate" class="btn btn-outline" type="button">✨ AI draft</button>
+            <button id="btnDealSend" class="btn btn-primary" type="button">Send email</button>
+            <span id="dealMsg" class="muted"></span>
+          </div>
         </div>
       </section>
     </div>

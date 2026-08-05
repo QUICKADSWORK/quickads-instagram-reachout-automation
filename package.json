@@ -15,6 +15,8 @@
     "xlsx": "^0.18.5"
   },
   "optionalDependencies": {
+    "imapflow": "^1.0.164",
+    "mailparser": "^3.7.1",
     "playwright": "1.44.0"
   }
 }

@@ -14,6 +14,7 @@ Discover Instagram influencers, send DMs, and let an AI agent negotiate paid col
 - **Campaign Management** — Set brand, budget range, and campaign brief per campaign
 - **Deal Dashboard** — Track negotiation status, conversation history, and total spend
 - **Email Outreach** — Upload a contact sheet (.xlsx/.csv), write one template, and send personalized emails from your own mailbox; every send is logged
+- **Email Auto-Negotiate** — The same AI agent that negotiates over Instagram DMs, wired to email: **assisted** (it drafts each reply, you approve and send) or full **autopilot** (it reads replies over IMAP and responds on its own), with a Deals dashboard for every conversation
 - **Export** — CSV and Excel export of discovered influencers (incl. analytics + fit scores)
 - **DM Tracking** — Tracks who you've contacted via localStorage
 
@@ -46,11 +47,44 @@ Open **Email Outreach** in the top nav. Four steps:
 **Results** keeps every campaign and every individual send (status, subject,
 error) with a CSV export. Everything is stored on disk in `DATA_DIR`:
 `email_senders.json`, `email_contacts.json`, `email_templates.json`,
-`email_campaigns.json`, `email_sends.json`.
+`email_campaigns.json`, `email_sends.json`, `email_negotiations.json`.
 
 > Passwords are write-only — they're never returned by the API. Mind your
 > provider's daily limits (Gmail ≈ 500/day, Workspace ≈ 2,000) and keep a delay
 > between emails so your account isn't flagged.
+
+### Auto-Negotiate
+
+Tick **Let AI negotiate replies automatically** in step 4 (Send) and give the
+campaign a brand, a budget range, and a one-line brief. From then on, every
+person you email gets a **deal thread** on the new **Deals** tab, and the AI
+takes over the back-and-forth — opening near your minimum, never going above
+your maximum (and never revealing that ceiling), confirming the deal once, and
+bowing out gracefully if it can't land. It writes like a real person on the
+partnerships team and never promises performance results.
+
+Two ways to run it — they share one engine, so you can mix them per deal:
+
+1. **Assisted** — open a deal, paste (or forward) the creator's reply, click
+   **AI draft**, review/edit the email, and **Send**. No extra setup.
+2. **Autopilot** — flip **Start Autopilot** on the Deals tab and the app reads
+   your mailbox over IMAP, matches each reply to its thread, drafts a response
+   and sends it, all on its own. This needs an **IMAP host** on the sending
+   mailbox (**Send From → Advanced**): Gmail is `imap.gmail.com:993`, Outlook
+   `outlook.office365.com:993`, Zoho `imap.zoho.com:993` — the same address and
+   app password you already use for sending. Pure sending relays (SendGrid,
+   Brevo, Mailgun) can't receive mail, so autopilot needs a real inbox;
+   assisted mode still works with any of them.
+
+Replies are threaded (`Re:` + `In-Reply-To`/`References`) so they land in the
+same conversation in the creator's inbox. The same anti-spam guards as the DM
+agent apply: at most two messages in a row, and near-duplicate emails are
+blocked. Set a deal's status to **Closed** (with the agreed price) to record it
+in your stats.
+
+> Auto-negotiate uses your `CLAUDE_API_KEY` (and `CLAUDE_MODEL`). IMAP reading
+> needs the optional `imapflow` + `mailparser` packages, installed by default
+> with `npm install`; assisted mode works without them.
 
 ## Connecting Instagram
 
@@ -172,7 +206,20 @@ Open **http://localhost:3000** in your browser.
 | POST | `/api/email/campaigns/:id/stop` | Stop a running campaign |
 | GET | `/api/email/sends` | Every individual send result |
 | GET | `/api/email/sends/export` | Download all results as CSV |
-| GET | `/api/email/stats` | Contact/send/campaign totals |
+| GET | `/api/email/stats` | Contact/send/campaign/deal totals |
+
+### Email Auto-Negotiate
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/email/negotiations` | List deal threads (filter by `campaignId`/`status`) |
+| GET | `/api/email/negotiations/:id` | One deal thread with full history |
+| POST | `/api/email/negotiations/:id/reply` | Assisted: add the creator's reply |
+| POST | `/api/email/negotiations/:id/generate` | AI drafts the next email (doesn't send) |
+| POST | `/api/email/negotiations/:id/send` | Send a negotiation email (threaded) via SMTP |
+| PATCH | `/api/email/negotiations/:id` | Update status / agreed price |
+| DELETE | `/api/email/negotiations/:id` | Delete a deal thread |
+| POST | `/api/email/autopilot/poll` | Read the mailbox over IMAP and ingest new replies |
+| POST | `/api/email/autopilot/run` | Full cycle: read replies → AI draft → send |
 
 ### Brand Fit
 | Method | Endpoint | Description |

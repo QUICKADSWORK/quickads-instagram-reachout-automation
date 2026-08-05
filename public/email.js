@@ -11,6 +11,11 @@
   let editingTemplateId = null;
   let editingSenderId = null;
   let pollTimer = null;
+  let deals = [];
+  let currentDeal = null;
+  let dealAutopilotOn = false;
+  let dealAutopilotTimer = null;
+  const DEAL_AUTOPILOT_MS = 60000;
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -47,6 +52,7 @@
       if (tab.dataset.pane === 'paneResults') loadResults();
       if (tab.dataset.pane === 'paneSend') fillCampaignSelects();
       if (tab.dataset.pane === 'paneTemplate') refreshPreview();
+      if (tab.dataset.pane === 'paneDeals') loadDeals();
     });
   });
 
@@ -58,7 +64,9 @@
       $('#statSent').textContent = s.sent;
       $('#statFailed').textContent = s.failed;
       $('#statCampaigns').textContent = s.campaigns;
+      $('#statDeals').textContent = s.negotiationsActive || 0;
       $('#tabContactCount').textContent = s.contacts;
+      $('#tabDealCount').textContent = s.negotiations || 0;
     } catch (_) {}
   }
 
@@ -76,6 +84,8 @@
     $('#sProviderHint').textContent = p.hint || '';
     $('#sHost').value = p.host || '';
     $('#sPort').value = p.port || 587;
+    $('#sImapHost').value = p.imapHost || '';
+    $('#sImapPort').value = p.imapPort || 993;
     if (p.presetUser) $('#sUser').value = p.presetUser;
     // A custom provider has no preset host, so the user must fill it in —
     // don't leave that required field hidden behind "Advanced".
@@ -93,8 +103,12 @@
       el.innerHTML = senders.map(s => `
         <div class="row-item">
           <div class="row-item-main">
-            <div class="row-item-title">${esc(s.fromName || s.fromEmail)}</div>
-            <div class="row-item-sub">${esc(s.fromEmail)} · ${esc(s.host)}:${esc(s.port)}</div>
+            <div class="row-item-title">${esc(s.fromName || s.fromEmail)}
+              ${s.imapHost
+                ? '<span class="badge badge-good" style="margin-left:8px;">Auto-negotiate ready</span>'
+                : '<span class="badge badge-unknown" style="margin-left:8px;">Send-only</span>'}
+            </div>
+            <div class="row-item-sub">${esc(s.fromEmail)} · SMTP ${esc(s.host)}:${esc(s.port)}${s.imapHost ? ` · IMAP ${esc(s.imapHost)}:${esc(s.imapPort)}` : ''}</div>
           </div>
           <div style="display:flex;gap:8px;flex:none;">
             <button class="btn btn-outline btn-sm" data-test="${esc(s.id)}">Test</button>
@@ -121,9 +135,13 @@
     $('#sFromName').value = s.fromName || '';
     $('#sHost').value = s.host || '';
     $('#sPort').value = s.port || 587;
+    $('#sImapHost').value = s.imapHost || '';
+    $('#sImapPort').value = s.imapPort || 993;
     $('#sUser').value = s.user || '';
     $('#sReplyTo').value = s.replyTo || '';
     $('#sPass').value = '';
+    // IMAP fields live under Advanced — open it when editing one that uses them.
+    if (s.imapHost) $('#advancedDetails').open = true;
     $('#senderMsg').textContent = 'Editing — leave password blank to keep the current one.';
     $('#sFromEmail').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -156,6 +174,7 @@
   }
 
   $('#btnSaveSender').addEventListener('click', async () => {
+    const imapPort = Number($('#sImapPort').value) || 993;
     const payload = {
       id: editingSenderId || undefined,
       fromEmail: $('#sFromEmail').value.trim(),
@@ -166,6 +185,9 @@
       user: $('#sUser').value.trim(),
       replyTo: $('#sReplyTo').value.trim(),
       pass: $('#sPass').value,
+      imapHost: $('#sImapHost').value.trim(),
+      imapPort,
+      imapSecure: imapPort !== 143,
     };
     const btn = $('#btnSaveSender');
     btn.disabled = true;
@@ -448,12 +470,41 @@
     }
   }
 
+  // Show/hide the auto-negotiate fields with the checkbox.
+  $('#cNegotiate').addEventListener('change', () => {
+    $('#negotiateFields').style.display = $('#cNegotiate').checked ? 'block' : 'none';
+  });
+
+  function readNegotiateConfig() {
+    if (!$('#cNegotiate').checked) return { enabled: false };
+    return {
+      enabled: true,
+      brandName: $('#nBrand').value.trim(),
+      productName: $('#nProduct').value.trim(),
+      collabType: $('#nCollab').value.trim(),
+      brief: $('#nBrief').value.trim(),
+      currency: $('#nCurrency').value.trim() || 'USD',
+      budgetMin: Number($('#nBudgetMin').value) || 0,
+      budgetMax: Number($('#nBudgetMax').value) || 0,
+    };
+  }
+
   $('#btnStartCampaign').addEventListener('click', async () => {
     const senderId = $('#cSender').value;
     const templateId = $('#cTemplate').value;
     if (!senderId) { showToast('Add an email account in step 1 first.'); return; }
     if (!templateId) { showToast('Save a message in step 3 first.'); return; }
     if (!contacts.length) { showToast('Upload contacts in step 2 first.'); return; }
+
+    const negotiate = readNegotiateConfig();
+    if (negotiate.enabled) {
+      if (!negotiate.brandName) { showToast('Add a brand name for auto-negotiate, or turn it off.'); return; }
+      if (!(negotiate.budgetMax > 0)) { showToast('Set a maximum budget for auto-negotiate, or turn it off.'); return; }
+      const sender = senders.find(s => s.id === senderId);
+      if (sender && !sender.imapHost) {
+        showToast('Heads up: this mailbox has no IMAP host, so autopilot can\'t read replies — assisted negotiation will still work.', 7000);
+      }
+    }
 
     const audience = $('#cAudience').value;
     const count = audience === 'all'
@@ -474,10 +525,11 @@
           name: $('#cName').value.trim(),
           senderId, templateId, audience,
           delayMs: Number($('#cDelay').value),
+          negotiate,
         }),
       });
       $('#sendMsg').textContent = '';
-      showToast('Campaign started');
+      showToast(negotiate.enabled ? 'Campaign started — deals will open on the Deals tab.' : 'Campaign started');
       watchCampaign(data.campaign.id);
     } catch (err) {
       $('#sendMsg').textContent = err.message;
@@ -627,6 +679,276 @@
   }
 
   $('#filterStatus').addEventListener('change', () => loadSends());
+
+  // ─── Deals (auto-negotiate) ─────────────────────────────
+  function dealPreview(n) {
+    const last = n.messages && n.messages.length ? n.messages[n.messages.length - 1] : null;
+    if (!last) return '';
+    const fromCreator = last.role === 'creator';
+    const color = fromCreator ? 'var(--orange)' : 'var(--accent)';
+    const arrow = fromCreator ? '← ' : '→ ';
+    const text = (last.content || '').slice(0, 90);
+    return `<span style="color:${color};">${arrow}</span>${esc(text)}${(last.content || '').length > 90 ? '…' : ''}`;
+  }
+
+  async function loadDeals() {
+    try { deals = await api('/api/email/negotiations'); }
+    catch (_) { deals = []; }
+    $('#tabDealCount').textContent = deals.length;
+    const el = $('#dealsList');
+    if (!deals.length) {
+      $('#dealsEmpty').style.display = 'block';
+      el.innerHTML = '';
+      return;
+    }
+    $('#dealsEmpty').style.display = 'none';
+    el.innerHTML = deals.map(n => `
+      <div class="row-item">
+        <div class="row-item-main">
+          <div class="row-item-title">
+            ${esc(n.fullName || n.firstName || n.email)}
+            <span class="neg-status neg-status-${esc(n.status)}" style="margin-left:8px;">${esc(n.status)}</span>
+            ${n.agreedPrice ? `<span class="neg-price" style="margin-left:6px;">${esc(n.currency || '')} ${esc(n.agreedPrice)}</span>` : ''}
+          </div>
+          <div class="row-item-sub">${esc(n.email)}${n.brandName ? ' · ' + esc(n.brandName) : ''} · ${dealPreview(n)}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex:none;">
+          <button class="btn btn-outline btn-sm" data-open-deal="${esc(n.id)}">Open</button>
+        </div>
+      </div>`).join('');
+    el.querySelectorAll('[data-open-deal]').forEach(b =>
+      b.addEventListener('click', () => openDeal(b.dataset.openDeal)));
+  }
+
+  $('#btnRefreshDeals').addEventListener('click', () => loadDeals());
+
+  async function openDeal(id) {
+    try { currentDeal = await api('/api/email/negotiations/' + encodeURIComponent(id)); }
+    catch (err) { showToast(err.message); return; }
+    $('#dealsListPanel').style.display = 'none';
+    $('#dealThreadPanel').style.display = 'block';
+    $('#dealName').textContent = currentDeal.fullName || currentDeal.firstName || currentDeal.email;
+    const meta = [];
+    if (currentDeal.username) meta.push('@' + currentDeal.username);
+    if (currentDeal.followers) meta.push(Number(currentDeal.followers).toLocaleString() + ' followers');
+    meta.push(currentDeal.email);
+    if (currentDeal.budgetMax) {
+      meta.push(`budget ${currentDeal.currency || ''} ${currentDeal.budgetMin || 0}–${currentDeal.budgetMax}`);
+    }
+    $('#dealMeta').textContent = meta.join(' · ');
+    $('#dealStatus').value = currentDeal.status;
+    $('#dealDraft').value = '';
+    $('#dealCreatorReply').value = '';
+    $('#dealMsg').textContent = '';
+    renderDealThread();
+    $('#dealThreadPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderDealThread() {
+    const c = $('#dealMessages');
+    c.innerHTML = (currentDeal.messages || []).map(m => {
+      const isYou = m.role === 'you';
+      const time = m.timestamp ? when(m.timestamp) : '';
+      let tag = '';
+      if (isYou) {
+        if (m.autoGenerated) tag += ' · AI';
+        if (m.sentViaEmail) tag += ' · sent';
+      } else if (m.autoDetected) {
+        tag += ' · auto-detected';
+      }
+      return `
+        <div class="msg ${isYou ? 'msg-you' : 'msg-creator'}">
+          <div class="msg-label">${isYou ? 'You' : 'Creator'}</div>
+          ${esc(m.content)}
+          <div class="msg-time">${esc(time)}${tag}</div>
+        </div>`;
+    }).join('');
+    c.scrollTop = c.scrollHeight;
+  }
+
+  async function refreshCurrentDeal() {
+    if (!currentDeal) return;
+    try {
+      currentDeal = await api('/api/email/negotiations/' + encodeURIComponent(currentDeal.id));
+      $('#dealStatus').value = currentDeal.status;
+      renderDealThread();
+    } catch (_) {}
+  }
+
+  $('#btnBackToDeals').addEventListener('click', () => {
+    $('#dealThreadPanel').style.display = 'none';
+    $('#dealsListPanel').style.display = 'block';
+    currentDeal = null;
+    loadDeals();
+  });
+
+  $('#btnDealSubmitReply').addEventListener('click', async () => {
+    if (!currentDeal) return;
+    const msg = $('#dealCreatorReply').value.trim();
+    if (!msg) { showToast("Paste the creator's reply first"); return; }
+    try {
+      currentDeal = await api('/api/email/negotiations/' + encodeURIComponent(currentDeal.id) + '/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      $('#dealCreatorReply').value = '';
+      $('#dealStatus').value = currentDeal.status;
+      renderDealThread();
+      showToast('Reply added — drafting a response…');
+      generateDealDraft();
+    } catch (err) { showToast(err.message, 6000); }
+  });
+
+  async function generateDealDraft() {
+    if (!currentDeal) return;
+    const btn = $('#btnDealGenerate');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Drafting…';
+    $('#dealMsg').textContent = '';
+    try {
+      const data = await api('/api/email/negotiations/' + encodeURIComponent(currentDeal.id) + '/generate', {
+        method: 'POST',
+      });
+      $('#dealDraft').value = data.message || '';
+      $('#dealMsg').textContent = 'AI draft ready — review, edit, then Send.';
+    } catch (err) {
+      $('#dealMsg').textContent = err.message;
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  }
+
+  $('#btnDealGenerate').addEventListener('click', generateDealDraft);
+
+  $('#btnDealSend').addEventListener('click', async () => {
+    if (!currentDeal) return;
+    const message = $('#dealDraft').value.trim();
+    if (!message) { showToast('Write or generate an email first'); return; }
+    const btn = $('#btnDealSend');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const data = await api('/api/email/negotiations/' + encodeURIComponent(currentDeal.id) + '/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+      currentDeal = data.negotiation;
+      $('#dealDraft').value = '';
+      $('#dealMsg').textContent = 'Sent ✓';
+      renderDealThread();
+      showToast('Email sent');
+      loadStats();
+    } catch (err) {
+      $('#dealMsg').textContent = err.message;
+      showToast(err.message, 7000);
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
+
+  $('#dealStatus').addEventListener('change', async () => {
+    if (!currentDeal) return;
+    const status = $('#dealStatus').value;
+    const body = { status };
+    if (status === 'closed') {
+      const p = prompt('Agreed price? (number)', currentDeal.agreedPrice || '');
+      if (p === null) { $('#dealStatus').value = currentDeal.status; return; }
+      body.agreedPrice = parseFloat(p) || 0;
+    }
+    try {
+      currentDeal = await api('/api/email/negotiations/' + encodeURIComponent(currentDeal.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      showToast('Status: ' + status);
+      loadStats();
+    } catch (err) {
+      showToast(err.message);
+      $('#dealStatus').value = currentDeal.status;
+    }
+  });
+
+  // ── Deal autopilot ──
+  function logDealAuto(msg, type = 'info') {
+    const el = $('#dealAutopilotLog');
+    el.style.display = 'block';
+    const time = new Date().toLocaleTimeString();
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${type}">${esc(msg)}</span>`;
+    el.appendChild(entry);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  async function runDealAutopilotOnce() {
+    logDealAuto('Checking inbox for replies…', 'info');
+    $('#dealAutopilotStatus').textContent = 'Checking inbox…';
+    try {
+      const data = await api('/api/email/autopilot/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      (data.errors || []).forEach(e => logDealAuto(`Inbox read failed for ${e.sender}: ${e.error}`, 'error'));
+      const results = data.results || [];
+      const acts = data.actions || [];
+      if (!acts.length && !results.length && !(data.errors || []).length) {
+        logDealAuto('No new replies.', 'info');
+      }
+      results.forEach(r => {
+        if (r.status === 'replied') {
+          logDealAuto(`${r.email} said: "${(r.creatorSaid || '').slice(0, 60)}…"`, 'info');
+          logDealAuto(`AI replied to ${r.email}`, 'action');
+        } else if (r.status === 'ai_failed') {
+          logDealAuto(`AI failed for ${r.email}: ${r.error}`, 'error');
+        } else if (r.status === 'send_failed') {
+          logDealAuto(`Send failed for ${r.email}: ${r.error || 'unknown'}`, 'error');
+        } else if (r.status === 'skipped') {
+          logDealAuto(`Skipped ${r.email}: ${r.reason || 'spam guard'}`, 'info');
+        }
+      });
+      const replied = results.filter(r => r.status === 'replied').length;
+      $('#dealAutopilotStatus').textContent = dealAutopilotOn
+        ? `Handled ${replied} reply(s). Next check in ${DEAL_AUTOPILOT_MS / 1000}s…`
+        : `Handled ${replied} reply(s).`;
+      if (acts.length || replied) {
+        loadDeals();
+        loadStats();
+        if (currentDeal) refreshCurrentDeal();
+        if (replied) showToast(`Autopilot handled ${replied} reply(s)`);
+      }
+    } catch (err) {
+      logDealAuto('Error: ' + err.message, 'error');
+      $('#dealAutopilotStatus').textContent = 'Error: ' + err.message;
+    }
+  }
+
+  function startDealAutopilot() {
+    if (dealAutopilotOn) return;
+    dealAutopilotOn = true;
+    $('#dealAutopilotBar').classList.add('active');
+    $('#dealAutopilotLabel').textContent = 'Autopilot ON';
+    $('#btnDealAutopilotToggle').textContent = '⏸ Stop Autopilot';
+    logDealAuto(`Autopilot started. Checking every ${DEAL_AUTOPILOT_MS / 1000}s…`, 'action');
+    runDealAutopilotOnce();
+    dealAutopilotTimer = setInterval(runDealAutopilotOnce, DEAL_AUTOPILOT_MS);
+  }
+
+  function stopDealAutopilot() {
+    dealAutopilotOn = false;
+    if (dealAutopilotTimer) clearInterval(dealAutopilotTimer);
+    dealAutopilotTimer = null;
+    $('#dealAutopilotBar').classList.remove('active');
+    $('#dealAutopilotLabel').textContent = 'Autopilot Off';
+    $('#btnDealAutopilotToggle').textContent = '▶ Start Autopilot';
+    logDealAuto('Autopilot stopped.', 'info');
+  }
+
+  $('#btnDealAutopilotToggle').addEventListener('click', () =>
+    dealAutopilotOn ? stopDealAutopilot() : startDealAutopilot());
+  $('#btnDealAutopilotOnce').addEventListener('click', runDealAutopilotOnce);
 
   // ─── Init ───────────────────────────────────────────────
   (async function init() {

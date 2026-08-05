@@ -2942,21 +2942,33 @@ function getNodemailer() {
 
 // Ready-made SMTP settings for common mailbox providers, so the user only
 // has to supply an address + app password.
+// `imapHost`/`imapPort` power auto-negotiate: reading the mailbox for replies.
+// The same address + app password works for both SMTP and IMAP on real
+// mailboxes (Gmail, Outlook, Zoho). Pure sending relays (SendGrid, Brevo,
+// Mailgun) can't receive mail, so they have no IMAP host — auto-negotiate
+// autopilot won't work with those, only the assisted "paste the reply" flow.
 const SMTP_PRESETS = [
   { id: 'gmail', label: 'Gmail / Google Workspace', host: 'smtp.gmail.com', port: 465, secure: true,
+    imapHost: 'imap.gmail.com', imapPort: 993,
     hint: 'Use a Google App Password (myaccount.google.com → Security → App passwords), not your normal password. Needs 2-Step Verification on.' },
   { id: 'outlook', label: 'Outlook / Microsoft 365', host: 'smtp-mail.outlook.com', port: 587, secure: false,
+    imapHost: 'outlook.office365.com', imapPort: 993,
     hint: 'If 2FA is on, create an app password in your Microsoft account security settings.' },
   { id: 'zoho', label: 'Zoho Mail', host: 'smtp.zoho.com', port: 465, secure: true,
+    imapHost: 'imap.zoho.com', imapPort: 993,
     hint: 'Generate an app-specific password in Zoho → My Account → Security.' },
   { id: 'sendgrid', label: 'SendGrid', host: 'smtp.sendgrid.net', port: 587, secure: false, presetUser: 'apikey',
-    hint: 'Username is literally "apikey". Password is your SendGrid API key.' },
+    imapHost: '', imapPort: 993,
+    hint: 'Username is literally "apikey". Password is your SendGrid API key. Send-only — auto-negotiate autopilot needs a real inbox (Gmail/Outlook/Zoho).' },
   { id: 'brevo', label: 'Brevo (Sendinblue)', host: 'smtp-relay.brevo.com', port: 587, secure: false,
-    hint: 'Use the SMTP key from Brevo → SMTP & API.' },
+    imapHost: '', imapPort: 993,
+    hint: 'Use the SMTP key from Brevo → SMTP & API. Send-only — auto-negotiate autopilot needs a real inbox.' },
   { id: 'mailgun', label: 'Mailgun', host: 'smtp.mailgun.org', port: 587, secure: false,
-    hint: 'Use the SMTP credentials shown on your Mailgun sending domain.' },
+    imapHost: '', imapPort: 993,
+    hint: 'Use the SMTP credentials shown on your Mailgun sending domain. Send-only — auto-negotiate autopilot needs a real inbox.' },
   { id: 'custom', label: 'Other / custom SMTP', host: '', port: 587, secure: false,
-    hint: 'Enter the SMTP host and port from your email provider.' },
+    imapHost: '', imapPort: 993,
+    hint: 'Enter the SMTP host and port from your email provider. For auto-negotiate, also set the IMAP host under Advanced.' },
 ];
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -2977,6 +2989,7 @@ function normalizeSender(raw, existing) {
   const prev = existing || {};
   const fromEmail = String(raw.fromEmail ?? prev.fromEmail ?? '').trim();
   const port = Number(raw.port ?? prev.port ?? 587);
+  const imapPort = Number(raw.imapPort ?? prev.imapPort ?? 993);
   return {
     id: prev.id || genId(),
     label: String(raw.label ?? prev.label ?? '').trim() || fromEmail,
@@ -2989,9 +3002,20 @@ function normalizeSender(raw, existing) {
     user: String(raw.user ?? prev.user ?? '').trim() || fromEmail,
     // Only overwrite the password when a new one is actually supplied.
     pass: raw.pass ? String(raw.pass) : (prev.pass || ''),
+    // IMAP — used only to read replies for auto-negotiate. Optional; when the
+    // host is blank the mailbox is treated as send-only.
+    imapHost: String(raw.imapHost ?? prev.imapHost ?? '').trim(),
+    imapPort: Number.isFinite(imapPort) ? imapPort : 993,
+    imapSecure: raw.imapSecure === undefined ? (prev.imapSecure ?? true) : !!raw.imapSecure,
     createdAt: prev.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+}
+
+// A sender can read its mailbox (needed for auto-negotiate autopilot) only if
+// it has an IMAP host configured. Assisted negotiation works without this.
+function senderCanReadInbox(sender) {
+  return !!(sender && sender.imapHost && sender.pass);
 }
 
 function buildTransport(sender) {
@@ -3081,9 +3105,20 @@ app.post('/api/email/senders/:id/test', async (req, res) => {
     });
   }
 
+  // If an IMAP host is set, also confirm we can read the mailbox — that's what
+  // auto-negotiate autopilot needs. A failure here is non-fatal for sending.
+  let imap = { configured: senderCanReadInbox(sender) };
+  if (imap.configured) {
+    const r = await verifyImapConnection(sender);
+    imap = { ...imap, ok: r.ok, error: r.error || null };
+  }
+  const imapNote = imap.configured
+    ? (imap.ok ? ' Inbox reading (for auto-negotiate) works too.' : ` Inbox reading failed: ${imap.error}`)
+    : '';
+
   if (!to) {
     transport.close();
-    return res.json({ ok: true, verified: true, message: 'SMTP connection and login work.' });
+    return res.json({ ok: true, verified: true, imap, message: `SMTP connection and login work.${imapNote}` });
   }
   if (!isEmail(to)) {
     transport.close();
@@ -3098,7 +3133,7 @@ app.post('/api/email/senders/:id/test', async (req, res) => {
       subject: 'QuickAds test email',
       text: 'This is a test email from your QuickAds outreach tool. If you can read this, sending works.',
     });
-    res.json({ ok: true, verified: true, messageId: info.messageId, message: `Test email sent to ${to}.` });
+    res.json({ ok: true, verified: true, imap, messageId: info.messageId, message: `Test email sent to ${to}.${imapNote}` });
   } catch (err) {
     res.status(400).json({ ok: false, error: `Could not send the test email: ${err.message}` });
   } finally {
@@ -3545,6 +3580,18 @@ async function runEmailCampaign(campaignId) {
         campaign.sent++;
         recordSend({ ...base, status: 'sent', messageId: info.messageId || null, error: null });
         campaignLog(campaign, 'sent', `Sent to ${contact.email}`);
+
+        // Auto-negotiate: open a deal thread seeded with this first email so
+        // replies (pasted in, or auto-detected over IMAP) can be negotiated.
+        if (campaign.negotiate && campaign.negotiate.enabled) {
+          try {
+            seedEmailNegotiation(campaign, sender, contact, {
+              subject, body, messageId: info.messageId || null,
+            });
+          } catch (e) {
+            campaignLog(campaign, 'info', `Could not open negotiation for ${contact.email}: ${e.message}`);
+          }
+        }
       } catch (err) {
         campaign.failed++;
         recordSend({ ...base, status: 'failed', messageId: null, error: err.message });
@@ -3582,12 +3629,20 @@ app.get('/api/email/campaigns/:id', (req, res) => {
 });
 
 app.post('/api/email/campaigns', (req, res) => {
-  const { name, senderId, templateId, audience, contactIds, delayMs, start } = req.body || {};
+  const { name, senderId, templateId, audience, contactIds, delayMs, start, negotiate } = req.body || {};
 
   const sender = readDB(EMAIL_SENDERS_FILE).find(s => s.id === senderId);
   if (!sender) return res.status(400).json({ error: 'Pick which email address to send from.' });
   const template = readDB(EMAIL_TEMPLATES_FILE).find(t => t.id === templateId);
   if (!template) return res.status(400).json({ error: 'Pick an email template.' });
+
+  const negotiateCfg = normalizeNegotiateConfig(negotiate);
+  if (negotiateCfg.enabled && !negotiateCfg.brandName) {
+    return res.status(400).json({ error: 'Add a brand name for auto-negotiate, or turn it off.' });
+  }
+  if (negotiateCfg.enabled && !(negotiateCfg.budgetMax > 0)) {
+    return res.status(400).json({ error: 'Set a maximum budget for auto-negotiate, or turn it off.' });
+  }
 
   const contacts = readDB(EMAIL_CONTACTS_FILE);
   const sends = readDB(EMAIL_SENDS_FILE);
@@ -3606,6 +3661,7 @@ app.post('/api/email/campaigns', (req, res) => {
       const n = Number(delayMs);
       return Number.isFinite(n) ? Math.min(600000, Math.max(0, n)) : 10000;
     })(),
+    negotiate: negotiateCfg,
     status: 'draft',
     total: 0,
     processed: 0,
@@ -3687,6 +3743,8 @@ app.get('/api/email/sends/export', (req, res) => {
 app.get('/api/email/stats', (req, res) => {
   const sends = readDB(EMAIL_SENDS_FILE);
   const contacts = readDB(EMAIL_CONTACTS_FILE);
+  const negs = readDB(EMAIL_NEGOTIATIONS_FILE);
+  const closed = negs.filter(n => n.status === 'closed');
   res.json({
     contacts: contacts.length,
     unsubscribed: contacts.filter(c => c.unsubscribed).length,
@@ -3696,7 +3754,685 @@ app.get('/api/email/stats', (req, res) => {
     sent: sends.filter(s => s.status === 'sent').length,
     failed: sends.filter(s => s.status === 'failed').length,
     reached: new Set(sends.filter(s => s.status === 'sent').map(s => s.email)).size,
+    negotiations: negs.length,
+    negotiationsActive: negs.filter(n => n.status === 'replied' || n.status === 'negotiating').length,
+    dealsClosed: closed.length,
+    dealSpend: closed.reduce((sum, n) => sum + (Number(n.agreedPrice) || 0), 0),
   });
+});
+
+// ═══════════════════════════════════════════════════════════
+//  Email Auto-Negotiate
+//  The same negotiation brain that runs Instagram DMs, wired to
+//  email. Two modes share one engine:
+//   • Assisted — paste/forward the creator's reply, the AI drafts
+//     the next email, you review and it sends over SMTP.
+//   • Autopilot — the app reads the mailbox over IMAP, matches
+//     each reply to its deal thread, drafts and sends by itself.
+//  Deal threads are seeded automatically when a campaign that has
+//  auto-negotiate turned on sends its first email.
+// ═══════════════════════════════════════════════════════════
+
+const EMAIL_NEGOTIATIONS_FILE = 'email_negotiations.json';
+
+// Per-campaign negotiation settings. `budgetMax` is the hard ceiling the AI
+// must never cross or reveal.
+function normalizeNegotiateConfig(raw) {
+  raw = raw || {};
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  };
+  return {
+    enabled: !!raw.enabled,
+    brandName: String(raw.brandName || '').trim(),
+    productName: String(raw.productName || '').trim(),
+    collabType: String(raw.collabType || '').trim() || 'Paid collaboration',
+    brief: String(raw.brief || '').trim(),
+    currency: String(raw.currency || 'USD').trim() || 'USD',
+    budgetMin: num(raw.budgetMin),
+    budgetMax: num(raw.budgetMax),
+  };
+}
+
+// Strip "Re:"/"Fwd:" prefixes so replies thread onto their original subject.
+function subjectBase(s) {
+  return String(s || '').replace(/^\s*((re|fwd|fw)\s*:\s*)+/i, '').trim();
+}
+
+// Email-tuned sibling of buildNegotiationPrompt(). Same negotiation logic
+// (open low, never reveal the ceiling, confirm once, bail gracefully) but
+// written for an inbox instead of a DM thread, and told to read human.
+function buildEmailNegotiationPrompt(neg, sender) {
+  const rep = (sender && sender.fromName) || neg.brandName || 'the partnerships team';
+  const brand = neg.brandName || 'our brand';
+  const cur = neg.currency || 'USD';
+  const creatorName = neg.firstName || neg.fullName || (neg.username ? '@' + neg.username : '') || 'there';
+  return `You are ${rep}, handling paid creator partnerships for ${brand}. You are negotiating a paid collaboration with a creator over EMAIL. You write like a real person on the brand's partnerships team. Never say or imply you are an AI.
+
+BRAND / DEAL
+- Brand: ${brand}
+- Product: ${neg.productName || 'Not specified'}
+- Collaboration: ${neg.collabType || 'Paid collaboration'}
+- Brief: ${neg.brief || 'A paid collaboration'}
+- Currency: ${cur}
+
+BUDGET (never state these numbers as limits, and never reveal a ceiling exists)
+- Your range for this creator: ${cur} ${neg.budgetMin} to ${cur} ${neg.budgetMax}.
+- Open near the LOWER end. You may move up toward the max, but treat ${cur} ${neg.budgetMax} as a hard ceiling.
+- If they ask for more than the max, say it's a little beyond what you can do on this one and offer your max as a final stretch. If they still won't move, decline warmly and leave the door open.
+
+CREATOR
+- Name: ${creatorName}
+- Handle: ${neg.username ? '@' + neg.username : 'n/a'}
+- Followers: ${neg.followers || 'Unknown'}
+- Niche: ${neg.category || 'Unknown'}
+
+HOW TO WRITE THE EMAIL
+1. Short. Two short paragraphs at most, plus a one-line greeting and a sign-off. This is a busy inbox, not an essay.
+2. Warm, direct, human. Use contractions. No corporate filler, no hype, no exclamation-point spam, no stacks of em dashes. Do not sound like AI-generated copy.
+3. Greet them by name ("Hi ${creatorName},"). Sign off briefly as ${rep}.
+4. One clear job per email: make or adjust an offer, answer their question, or confirm the deal. Never repeat a number or a sentence you already used earlier in the thread.
+5. When a price and deliverables are agreed, confirm them ONCE, clearly, and say what happens next (brief, timeline). Do not re-confirm something already confirmed.
+6. Never invent product facts or numbers, and never promise performance outcomes (sales, ROI, reach lifts).
+7. If the most recent message in the thread is already from you — i.e. you're waiting on their reply — do NOT send a chaser. Output exactly the word: WAIT
+
+Output ONLY the email body to send: greeting, message, sign-off. No "Subject:" line, no notes, no explanation. If rule 7 applies, output exactly: WAIT`;
+}
+
+// Shared Claude call. Returns the assistant's text, or throws on API error.
+async function callClaudeChat({ system, messages, maxTokens = 700 }) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': CLAUDE_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      thinking: { type: 'disabled' },
+      system,
+      messages,
+    }),
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    const err = new Error(`Claude API error: ${errBody.slice(0, 300)}`);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  return (data.content?.[0]?.text || '').trim();
+}
+
+// Turn a stored thread into the alternating user/assistant messages Claude
+// expects. 'creator' = user, 'you' = assistant. Claude needs the first turn to
+// be a user turn; our threads start with our own outreach, so prepend context
+// when needed (e.g. drafting before any reply has come in).
+function threadToClaudeMessages(neg) {
+  const messages = neg.messages.map(m => ({
+    role: m.role === 'creator' ? 'user' : 'assistant',
+    content: m.content,
+  }));
+  // Claude needs the first turn to be a user turn.
+  if (!messages.length || messages[0].role !== 'user') {
+    messages.unshift({
+      role: 'user',
+      content: '(The creator has not replied yet in this thread.)',
+    });
+  }
+  // And it must end on a user turn — otherwise a trailing assistant message is
+  // treated as a prefill to continue, not a thread to respond to. When we're
+  // the last to speak, that means we're waiting on the creator.
+  if (messages[messages.length - 1].role === 'assistant') {
+    messages.push({
+      role: 'user',
+      content: "(You sent the last email and are waiting on the creator's reply. If there is nothing new to say, respond with exactly: WAIT)",
+    });
+  }
+  return messages;
+}
+
+// Open (or extend) a deal thread when a negotiate-enabled campaign sends its
+// first email. One thread per (campaign, contact email); the deal terms are
+// snapshotted so the thread stays valid even if the campaign is deleted.
+function seedEmailNegotiation(campaign, sender, contact, sent) {
+  const all = readDB(EMAIL_NEGOTIATIONS_FILE);
+  const email = String(contact.email || '').toLowerCase();
+  const cfg = campaign.negotiate || {};
+  const nowIso = new Date().toISOString();
+  let neg = all.find(n => n.campaignId === campaign.id && n.email === email);
+  if (!neg) {
+    neg = {
+      id: genId(),
+      campaignId: campaign.id,
+      campaignName: campaign.name,
+      senderId: sender.id,
+      contactId: contact.id || null,
+      email,
+      fullName: contact.fullName || '',
+      firstName: contact.firstName || '',
+      username: contact.username || '',
+      followers: Number(contact.followers) || 0,
+      category: contact.category || (contact.custom && contact.custom.category) || '',
+      brandName: cfg.brandName || '',
+      productName: cfg.productName || '',
+      collabType: cfg.collabType || '',
+      brief: cfg.brief || '',
+      currency: cfg.currency || 'USD',
+      budgetMin: cfg.budgetMin || 0,
+      budgetMax: cfg.budgetMax || 0,
+      subject: subjectBase(sent.subject),
+      status: 'contacted',
+      agreedPrice: null,
+      messages: [],
+      sentMessageIds: [],
+      seenInboundIds: [],
+      lastSentMessageId: null,
+      lastCreatorMessageId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    all.push(neg);
+  }
+  neg.messages.push({
+    role: 'you',
+    content: sent.body,
+    subject: sent.subject,
+    timestamp: nowIso,
+    sentViaEmail: true,
+    messageId: sent.messageId || null,
+  });
+  if (sent.messageId) {
+    neg.sentMessageIds.push(sent.messageId);
+    neg.lastSentMessageId = sent.messageId;
+  }
+  neg.updatedAt = nowIso;
+  writeDB(EMAIL_NEGOTIATIONS_FILE, all);
+  return neg;
+}
+
+// ── IMAP: reading the mailbox for replies ──────────────────
+// Lazy-required, exactly like nodemailer, so the app still boots (and assisted
+// mode still works) if these optional packages aren't installed.
+let _imapFlow;
+function getImapFlow() {
+  if (_imapFlow === undefined) {
+    try { _imapFlow = require('imapflow').ImapFlow; }
+    catch (_) { _imapFlow = null; }
+  }
+  return _imapFlow;
+}
+
+let _simpleParser;
+function getMailParser() {
+  if (_simpleParser === undefined) {
+    try { _simpleParser = require('mailparser').simpleParser; }
+    catch (_) { _simpleParser = null; }
+  }
+  return _simpleParser;
+}
+
+function imapConfig(sender) {
+  return {
+    host: sender.imapHost,
+    port: Number(sender.imapPort) || 993,
+    secure: sender.imapSecure !== false,
+    auth: { user: sender.user || sender.fromEmail, pass: sender.pass },
+    logger: false,
+  };
+}
+
+async function verifyImapConnection(sender) {
+  const ImapFlow = getImapFlow();
+  if (!ImapFlow) return { ok: false, error: 'The "imapflow" package is not installed (run: npm install imapflow mailparser).' };
+  if (!senderCanReadInbox(sender)) return { ok: false, error: 'No IMAP host set for this mailbox.' };
+  const client = new ImapFlow(imapConfig(sender));
+  try {
+    await client.connect();
+    await client.logout();
+    return { ok: true };
+  } catch (err) {
+    try { await client.close(); } catch (_) {}
+    return { ok: false, error: err.message };
+  }
+}
+
+// Newest-first list of recent inbox messages, parsed to a small flat shape.
+async function fetchRecentInbox(sender, { sinceDays = 21, limit = 80 } = {}) {
+  const ImapFlow = getImapFlow();
+  const simpleParser = getMailParser();
+  if (!ImapFlow || !simpleParser) {
+    throw new Error('Reading email needs the "imapflow" and "mailparser" packages. Run: npm install imapflow mailparser');
+  }
+  const client = new ImapFlow(imapConfig(sender));
+  const out = [];
+  await client.connect();
+  try {
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+      let uids = await client.search({ since }, { uid: true });
+      if (!Array.isArray(uids)) uids = [];
+      uids = uids.sort((a, b) => b - a).slice(0, limit);
+      for (const uid of uids) {
+        const msg = await client.fetchOne(uid, { source: true }, { uid: true });
+        if (!msg || !msg.source) continue;
+        let parsed;
+        try { parsed = await simpleParser(msg.source); }
+        catch (_) { continue; }
+        out.push({
+          uid,
+          from: (parsed.from && parsed.from.value && parsed.from.value[0] && parsed.from.value[0].address || '').toLowerCase(),
+          subject: parsed.subject || '',
+          text: String(parsed.text || '').trim(),
+          messageId: parsed.messageId || null,
+          inReplyTo: parsed.inReplyTo || null,
+          references: [].concat(parsed.references || []).filter(Boolean),
+          date: parsed.date ? new Date(parsed.date).toISOString() : new Date().toISOString(),
+        });
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    try { await client.logout(); } catch (_) { try { await client.close(); } catch (_) {} }
+  }
+  return out;
+}
+
+// Drop quoted history so the AI reads only what the creator actually wrote.
+function stripQuotedReply(text) {
+  if (!text) return '';
+  let t = String(text).replace(/\r\n/g, '\n');
+  const markers = [
+    /\nOn .*wrote:/i,
+    /\n-----Original Message-----/i,
+    /\n________________________________/,
+    /\nFrom:.*\nSent:/i,
+    /\n>{1,}\s/,
+  ];
+  let cut = t.length;
+  for (const re of markers) {
+    const m = t.match(re);
+    if (m && m.index < cut) cut = m.index;
+  }
+  t = t.slice(0, cut);
+  return t.split('\n').filter(l => !/^\s*>/.test(l)).join('\n').trim();
+}
+
+// Which deal thread does an inbound message belong to?
+function matchNegotiationForInbound(msg, negs) {
+  // 1) Strongest: the reply references one of the Message-IDs we sent.
+  const refSet = new Set([msg.inReplyTo].concat(msg.references || []).filter(Boolean));
+  if (refSet.size) {
+    for (const n of negs) {
+      if ((n.sentMessageIds || []).some(id => refSet.has(id))) return n;
+    }
+  }
+  // 2) Same sender address + same subject thread.
+  const base = subjectBase(msg.subject);
+  for (const n of negs) {
+    if (n.email === msg.from && base && subjectBase(n.subject) === base) return n;
+  }
+  // 3) Looser: just the sender address, if it's unambiguous.
+  const byAddr = negs.filter(n => n.email === msg.from);
+  return byAddr.length === 1 ? byAddr[0] : null;
+}
+
+// Send one negotiation email over SMTP, threaded onto the existing subject.
+async function sendNegotiationEmail(sender, neg, message) {
+  const transport = buildTransport(sender);
+  try {
+    const fromHeader = sender.fromName ? `"${sender.fromName}" <${sender.fromEmail}>` : sender.fromEmail;
+    const base = neg.subject || 'Our collaboration';
+    const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
+    const inReplyTo = neg.lastCreatorMessageId || neg.lastSentMessageId || undefined;
+    const references = (neg.sentMessageIds || [])
+      .concat(neg.lastCreatorMessageId ? [neg.lastCreatorMessageId] : [])
+      .filter(Boolean);
+    const info = await transport.sendMail({
+      from: fromHeader,
+      to: neg.email,
+      ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
+      subject,
+      text: message,
+      html: textToHtml(message),
+      ...(inReplyTo ? { inReplyTo } : {}),
+      ...(references.length ? { references } : {}),
+    });
+    return { ok: true, messageId: info.messageId || null, subject };
+  } finally {
+    try { transport.close(); } catch (_) {}
+  }
+}
+
+// Poll every negotiate-capable mailbox, match new replies to their threads and
+// append them as 'creator' messages. Returns what it ingested (and any
+// per-mailbox read errors). Does NOT send anything.
+async function ingestEmailReplies() {
+  const negs = readDB(EMAIL_NEGOTIATIONS_FILE);
+  const active = negs.filter(n => n.status !== 'closed' && n.status !== 'rejected');
+  if (!active.length) return { actions: [], errors: [] };
+
+  const senders = readDB(EMAIL_SENDERS_FILE);
+  const bySender = new Map();
+  for (const n of active) {
+    const s = senders.find(x => x.id === n.senderId);
+    if (!s || !senderCanReadInbox(s)) continue;
+    if (!bySender.has(s.id)) bySender.set(s.id, { sender: s, negs: [] });
+    bySender.get(s.id).negs.push(n);
+  }
+
+  const actions = [];
+  const errors = [];
+  let changed = false;
+
+  for (const { sender, negs: senderNegs } of bySender.values()) {
+    let inbox;
+    try {
+      inbox = await fetchRecentInbox(sender, { sinceDays: 21, limit: 80 });
+    } catch (err) {
+      errors.push({ sender: sender.fromEmail, error: err.message });
+      continue;
+    }
+    const myAddr = String(sender.fromEmail || '').toLowerCase();
+    // Oldest-first so multiple new replies land in the right order.
+    for (const msg of inbox.slice().reverse()) {
+      if (!msg.from || msg.from === myAddr) continue;
+      const neg = matchNegotiationForInbound(msg, senderNegs);
+      if (!neg) continue;
+      if (msg.messageId && (neg.seenInboundIds || []).includes(msg.messageId)) continue;
+      const cleaned = stripQuotedReply(msg.text) || String(msg.text || '').trim();
+      if (!cleaned) continue;
+      // Guard against re-ingesting the same reply when a server omits Message-ID.
+      const lastCreator = [...neg.messages].reverse().find(m => m.role === 'creator');
+      if (lastCreator && lastCreator.content === cleaned) continue;
+
+      neg.messages.push({
+        role: 'creator',
+        content: cleaned,
+        timestamp: msg.date,
+        autoDetected: true,
+        messageId: msg.messageId || null,
+      });
+      if (msg.messageId) {
+        neg.seenInboundIds = (neg.seenInboundIds || []).concat(msg.messageId);
+        neg.lastCreatorMessageId = msg.messageId;
+      }
+      if (neg.status === 'contacted') neg.status = 'replied';
+      if (neg.status !== 'closed' && neg.status !== 'rejected') neg.status = 'negotiating';
+      neg.updatedAt = new Date().toISOString();
+      changed = true;
+      actions.push({ negId: neg.id, email: neg.email, message: cleaned });
+    }
+  }
+
+  if (changed) writeDB(EMAIL_NEGOTIATIONS_FILE, negs);
+  return { actions, errors };
+}
+
+app.get('/api/email/negotiations', (req, res) => {
+  let list = readDB(EMAIL_NEGOTIATIONS_FILE);
+  if (req.query.campaignId) list = list.filter(n => n.campaignId === req.query.campaignId);
+  if (req.query.status) list = list.filter(n => n.status === req.query.status);
+  list = list.slice().sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  res.json(list);
+});
+
+app.get('/api/email/negotiations/:id', (req, res) => {
+  const neg = readDB(EMAIL_NEGOTIATIONS_FILE).find(n => n.id === req.params.id);
+  if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
+  res.json(neg);
+});
+
+// Assisted mode: user pastes/forwards the creator's reply.
+app.post('/api/email/negotiations/:id/reply', (req, res) => {
+  const { message } = req.body || {};
+  if (!message || !message.trim()) return res.status(400).json({ error: "Paste the creator's reply first." });
+  const all = readDB(EMAIL_NEGOTIATIONS_FILE);
+  const neg = all.find(n => n.id === req.params.id);
+  if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
+
+  neg.messages.push({ role: 'creator', content: message.trim(), timestamp: new Date().toISOString() });
+  if (neg.status === 'contacted') neg.status = 'replied';
+  if (neg.status !== 'closed' && neg.status !== 'rejected') neg.status = 'negotiating';
+  neg.updatedAt = new Date().toISOString();
+  writeDB(EMAIL_NEGOTIATIONS_FILE, all);
+  res.json(neg);
+});
+
+// AI drafts the next email (does not send).
+app.post('/api/email/negotiations/:id/generate', async (req, res) => {
+  try {
+    const neg = readDB(EMAIL_NEGOTIATIONS_FILE).find(n => n.id === req.params.id);
+    if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
+
+    const consecutiveYou = countConsecutiveYou(neg.messages);
+    if (consecutiveYou >= MAX_CONSECUTIVE_YOU) {
+      return res.status(400).json({
+        error: `You've already sent ${consecutiveYou} emails in a row. Wait for a reply before sending another.`,
+      });
+    }
+
+    const sender = readDB(EMAIL_SENDERS_FILE).find(s => s.id === neg.senderId);
+    const text = await callClaudeChat({
+      system: buildEmailNegotiationPrompt(neg, sender),
+      messages: threadToClaudeMessages(neg),
+    });
+
+    if (/^wait\b/i.test(text) || text.toUpperCase() === 'WAIT') {
+      return res.status(400).json({
+        error: 'The AI suggests waiting for the creator to reply first.',
+        code: 'AI_SUGGESTS_WAIT',
+      });
+    }
+    res.json({ message: text });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send a negotiation email over SMTP and append it to the thread.
+app.post('/api/email/negotiations/:id/send', async (req, res) => {
+  const negId = req.params.id;
+  const { message, force, autoGenerated } = req.body || {};
+  if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required.' });
+
+  if (!acquireSendLock('email:' + negId)) {
+    return res.status(409).json({ error: 'An email to this creator is already being sent. Please wait a moment.' });
+  }
+  try {
+    const neg = readDB(EMAIL_NEGOTIATIONS_FILE).find(n => n.id === negId);
+    if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
+
+    const consecutiveYou = countConsecutiveYou(neg.messages);
+    if (consecutiveYou >= MAX_CONSECUTIVE_YOU) {
+      return res.status(400).json({
+        error: `You've already sent ${consecutiveYou} emails in a row to ${neg.email}. Wait for them to reply.`,
+      });
+    }
+    if (!force) {
+      const dup = findDuplicateYouMessage(neg.messages, message);
+      if (dup.score >= DUPLICATE_SIMILARITY_THRESHOLD) {
+        return res.status(400).json({
+          error: `This email is ${(dup.score * 100).toFixed(0)}% similar to one you already sent. Edit it or regenerate.`,
+          similarity: dup.score,
+          code: 'DUPLICATE_MESSAGE',
+        });
+      }
+    }
+
+    const sender = readDB(EMAIL_SENDERS_FILE).find(s => s.id === neg.senderId);
+    if (!sender) return res.status(400).json({ error: 'The sending email account for this deal was not found.' });
+
+    let sendResult;
+    try {
+      sendResult = await sendNegotiationEmail(sender, neg, message);
+    } catch (err) {
+      return res.status(500).json({ error: `Could not send the email: ${err.message}` });
+    }
+
+    // Re-read in case something else touched the file mid-send.
+    const fresh = readDB(EMAIL_NEGOTIATIONS_FILE);
+    const cur = fresh.find(n => n.id === negId) || neg;
+    cur.messages = cur.messages || [];
+    cur.messages.push({
+      role: 'you',
+      content: message,
+      subject: sendResult.subject,
+      timestamp: new Date().toISOString(),
+      sentViaEmail: true,
+      autoGenerated: !!autoGenerated,
+      messageId: sendResult.messageId,
+    });
+    if (sendResult.messageId) {
+      cur.sentMessageIds = (cur.sentMessageIds || []).concat(sendResult.messageId);
+      cur.lastSentMessageId = sendResult.messageId;
+    }
+    cur.updatedAt = new Date().toISOString();
+    const idx = fresh.findIndex(n => n.id === negId);
+    if (idx !== -1) fresh[idx] = cur; else fresh.push(cur);
+    writeDB(EMAIL_NEGOTIATIONS_FILE, fresh);
+
+    res.json({ ok: true, negotiation: cur });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    releaseSendLock('email:' + negId);
+  }
+});
+
+app.patch('/api/email/negotiations/:id', (req, res) => {
+  const { status, agreedPrice } = req.body || {};
+  const all = readDB(EMAIL_NEGOTIATIONS_FILE);
+  const neg = all.find(n => n.id === req.params.id);
+  if (!neg) return res.status(404).json({ error: 'Negotiation not found.' });
+
+  const allowed = ['contacted', 'replied', 'negotiating', 'closed', 'rejected'];
+  if (status) {
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+    neg.status = status;
+  }
+  if (agreedPrice !== undefined) neg.agreedPrice = agreedPrice === null ? null : Number(agreedPrice);
+  neg.updatedAt = new Date().toISOString();
+  writeDB(EMAIL_NEGOTIATIONS_FILE, all);
+  res.json(neg);
+});
+
+app.delete('/api/email/negotiations/:id', (req, res) => {
+  const all = readDB(EMAIL_NEGOTIATIONS_FILE).filter(n => n.id !== req.params.id);
+  writeDB(EMAIL_NEGOTIATIONS_FILE, all);
+  res.json({ ok: true, total: all.length });
+});
+
+// Read the mailbox and ingest replies, but don't reply.
+app.post('/api/email/autopilot/poll', async (req, res) => {
+  try {
+    const { actions, errors } = await ingestEmailReplies();
+    res.json({ actions, errors });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Full cycle: read replies → draft with the AI → send over SMTP. Acts on every
+// active deal whose latest message is from the creator (so a reply that failed
+// to send last time is retried), with the same anti-spam guards as DMs.
+app.post('/api/email/autopilot/run', async (req, res) => {
+  try {
+    const { actions, errors } = await ingestEmailReplies();
+
+    let negs = readDB(EMAIL_NEGOTIATIONS_FILE);
+    const senders = readDB(EMAIL_SENDERS_FILE);
+    const pending = negs.filter(n =>
+      n.status !== 'closed' && n.status !== 'rejected' &&
+      n.messages.length && n.messages[n.messages.length - 1].role === 'creator'
+    );
+
+    const results = [];
+    for (const neg of pending) {
+      const sender = senders.find(s => s.id === neg.senderId);
+      if (!sender) { results.push({ email: neg.email, status: 'send_failed', error: 'Sending account not found.' }); continue; }
+
+      const before = neg.messages.slice(0, -1);
+      if (countConsecutiveYou(before) >= MAX_CONSECUTIVE_YOU) {
+        results.push({ email: neg.email, status: 'skipped', reason: 'Already sent the max emails in a row — waiting for the creator.' });
+        continue;
+      }
+      if (!acquireSendLock('email:' + neg.id)) {
+        results.push({ email: neg.email, status: 'skipped', reason: 'A send is already in flight.' });
+        continue;
+      }
+
+      try {
+        let aiText;
+        try {
+          aiText = await callClaudeChat({
+            system: buildEmailNegotiationPrompt(neg, sender),
+            messages: threadToClaudeMessages(neg),
+          });
+        } catch (err) {
+          results.push({ email: neg.email, status: 'ai_failed', error: err.message });
+          continue;
+        }
+        if (!aiText) { results.push({ email: neg.email, status: 'ai_failed', error: 'Empty AI response.' }); continue; }
+        if (/^wait\b/i.test(aiText) || aiText.toUpperCase() === 'WAIT') {
+          results.push({ email: neg.email, status: 'skipped', reason: 'AI chose to wait.' });
+          continue;
+        }
+        const dup = findDuplicateYouMessage(neg.messages, aiText);
+        if (dup.score >= DUPLICATE_SIMILARITY_THRESHOLD) {
+          results.push({ email: neg.email, status: 'skipped', reason: `AI draft is ${(dup.score * 100).toFixed(0)}% similar to an earlier email — skipped.` });
+          continue;
+        }
+
+        let sendResult;
+        try {
+          sendResult = await sendNegotiationEmail(sender, neg, aiText);
+        } catch (err) {
+          results.push({ email: neg.email, status: 'send_failed', error: err.message });
+          continue;
+        }
+
+        const fresh = readDB(EMAIL_NEGOTIATIONS_FILE);
+        const cur = fresh.find(n => n.id === neg.id);
+        if (cur) {
+          cur.messages.push({
+            role: 'you', content: aiText, subject: sendResult.subject,
+            timestamp: new Date().toISOString(), sentViaEmail: true,
+            autoGenerated: true, messageId: sendResult.messageId,
+          });
+          if (sendResult.messageId) {
+            cur.sentMessageIds = (cur.sentMessageIds || []).concat(sendResult.messageId);
+            cur.lastSentMessageId = sendResult.messageId;
+          }
+          cur.updatedAt = new Date().toISOString();
+          writeDB(EMAIL_NEGOTIATIONS_FILE, fresh);
+          negs = fresh;
+        }
+
+        const creatorSaid = [...neg.messages].reverse().find(m => m.role === 'creator');
+        results.push({
+          email: neg.email,
+          status: 'replied',
+          creatorSaid: (creatorSaid ? creatorSaid.content : '').slice(0, 200),
+          aiReplied: aiText,
+        });
+      } finally {
+        releaseSendLock('email:' + neg.id);
+      }
+
+      // Gentle spacing between sends.
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    res.json({ actions, errors, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
