@@ -2149,6 +2149,16 @@ app.post('/api/settings/cookies', (req, res) => {
   res.json({ ok: true, count: clean.length });
 });
 
+// Hand the session back. Uninstalling the helper does NOT do this — the
+// helper only ever copied the session here, and DMs are sent from the server
+// afterwards — so this is the only way to revoke it from inside the app.
+app.delete('/api/settings/cookies', (req, res) => {
+  const had = loadCookies().length;
+  writeDB('instagram_cookies.json', []);
+  cookieCheckCache = null;
+  res.json({ ok: true, removed: had });
+});
+
 // Does the stored session actually work? "A cookie file exists" is not the
 // same thing — an expired session passes the structural check and then fails
 // on the first DM. This asks Instagram.

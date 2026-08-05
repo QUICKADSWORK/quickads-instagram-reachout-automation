@@ -165,6 +165,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
+      // The app deleted its stored session — go back to "not connected" so
+      // the badge nudges again and the Instagram card can reappear.
+      case 'MARK_DISCONNECTED': {
+        await chrome.storage.local.remove(['connectedAt', 'lastAccount', 'promptDismissedAt']);
+        refreshBadge();
+        sendResponse({ ok: true });
+        return;
+      }
+
       // From the Instagram banner: stash a "please connect" flag and send the
       // user to the app, where the bridge finishes the job.
       case 'CONNECT_FROM_INSTAGRAM': {

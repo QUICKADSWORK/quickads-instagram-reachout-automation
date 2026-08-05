@@ -404,7 +404,14 @@
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
           <button id="btnTestCookies" class="btn btn-outline btn-sm" type="button">Check connection</button>
           <button id="btnRecheck" class="btn btn-outline btn-sm" type="button">Re-check</button>
+          <button id="btnDisconnect" class="btn btn-outline btn-sm" type="button"
+                  style="display:none;border-color:rgba(255,90,90,0.4);color:#ff8a8a;">Disconnect Instagram</button>
         </div>
+        <p id="disconnectHint" class="modal-hint" style="display:none;margin:0 0 8px;">
+          Your Instagram session is stored on this server so outreach can run when your browser is closed.
+          Removing the helper does not delete it — use Disconnect. To end the session on Instagram's side too,
+          go to Instagram → Settings → Account Centre → Password and security → Where you're logged in.
+        </p>
 
         <!-- Fallbacks -->
         <details style="margin-top:6px;">
